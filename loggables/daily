@@ -1,21 +1,16 @@
 /global/log/*.log /global/log/*/*.log /global/log/*/*/*.log {
-    daily                   # Rotate logs daily.
-    rotate 7                # Keep 7 old log files.
-    missingok               # If the log file is missing, ignore it.
-    notifempty              # Do not rotate the log if it is empty.
-    compress                # Compress rotated log files.
-    delaycompress           # Delay compression of the most recent log file.
-    copytruncate            # Truncate the original log file in place after copying.
-    dateext                 # Append a date extension to rotated log files.
-    dateformat -%Y%m%d       # Format the date extension.
-    sharedscripts           # Run postrotate only once, even if multiple logs are rotated.
-
-    # Move rotated logs to a subdirectory (optional, ensure it exists)
+    daily
+    rotate 7
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    dateext
+    dateformat -%Y%m%d
+    sharedscripts
     olddir /global/oldlogs
-
-    # An optional postrotate script. For example, if you need to signal a service to reopen its logs:
     postrotate
-        # Uncomment and modify the following line if a service needs to be notified:
-        # if pidof some_service > /dev/null ; then kill -HUP $(pidof some_service); fi
+        # modify if a service needs to be notified:
     endscript
 }
