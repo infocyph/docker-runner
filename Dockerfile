@@ -14,5 +14,6 @@ COPY loggables/ /etc/logrotate.d/
 RUN chmod +x /usr/local/bin/logrotate-worker.sh /usr/local/bin/pexe /usr/local/bin/dexe && \
     chmod 644 /etc/supervisor/supervisord.conf && \
     chmod 775 /var/log/supervisor /global/oldlogs && \
-    chmod 777 /global/log
+    chmod 777 /global/log && \
+    sed -i '1isu root root' /etc/logrotate.conf
 CMD ["supervisord", "-c", "/etc/supervisor/supervisord.conf"]
