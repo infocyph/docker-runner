@@ -1,5 +1,4 @@
 /global/log/*.log /global/log/*/*.log /global/log/*/*/*.log {
-    su root root
     daily
     rotate 7
     missingok
