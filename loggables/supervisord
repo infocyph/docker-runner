@@ -1,4 +1,4 @@
-/global/log/*.log /global/log/*/*.log /global/log/*/*/*.log {
+/var/log/supervisor/*.log {
     su root root
     daily
     rotate 7
