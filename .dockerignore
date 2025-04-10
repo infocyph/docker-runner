@@ -4,7 +4,6 @@
 .github
 
 # Ignore documentation and metadata files
-README.md
 LICENSE
 *.md
 

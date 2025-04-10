@@ -1,4 +1,4 @@
-name: Publish Docker image
+name: Docker Publish
 
 on:
   release:
@@ -38,7 +38,7 @@ jobs:
         with:
           images: |
             docker.io/infocyph/runner
-            ghcr.io/${{ github.repository_owner }}/runner
+            ghcr.io/infocyph/runner
 
       - name: Build and push Docker images
         id: push
@@ -60,7 +60,7 @@ jobs:
       - name: Generate artifact attestation for GHCR
         uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ghcr.io/${{ github.repository_owner }}/runner
+          subject-name: ghcr.io/infocyph/runner
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
           github-token: ${{ secrets.GH_TOKEN }}
