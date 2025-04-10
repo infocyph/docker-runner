@@ -10,7 +10,6 @@
     dateext
     dateformat -%Y%m%d
     sharedscripts
-    olddir /global/oldlogs
     postrotate
         # modify if a service needs to be notified:
     endscript

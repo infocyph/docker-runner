@@ -66,6 +66,7 @@ You can mount **any directory inside `/global/log`** to have its `.log` files au
 - Configs loaded from `/etc/logrotate.d/`
 - Rotates all files in `/global/log/` (and subdirectories) that end with `.log`
 - Mount your logs to `/global/log` to get rotated daily
+- Mount your logs to `/global/movelog` to get rotated daily long with old logs getting moved to `/global/oldlogs`
 - Rotated logs go to `/global/oldlogs` — make sure to persist this if you want to retain historical logs:
 ```bash
 -v $(pwd)/oldlogs:/global/oldlogs
@@ -83,6 +84,7 @@ docker run -d \
   -v ./cron-jobs:/etc/cron.d:ro \
   -v ./logs/runner:/var/log/supervisor \
   -v $(pwd)/logs:/global/log \
+  -v $(pwd)/movelogs:/global/movelog \
   -v $(pwd)/oldlogs:/global/oldlogs \
   infocyph/runner
 ```
