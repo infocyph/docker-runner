@@ -54,6 +54,11 @@ $ pexe my-php-app artisan migrate
 
 ## 🔄 Log Rotation
 
+> Set the `TZ` environment variable (for your desired timezone)
+> ```bash
+> TZ=Your_Desired_Timezone
+> ```
+
 You can mount **any directory inside `/global/log`** to have its `.log` files automatically rotated by the system.
 
 ```bash
