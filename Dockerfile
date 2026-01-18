@@ -61,6 +61,10 @@ RUN chmod +x \
     } > /etc/profile.d/banner-hook.sh \
   && chmod +x /etc/profile.d/banner-hook.sh
 
+# Healthcheck: supervisor must be up and responsive
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD supervisorctl -c /etc/supervisor/supervisord.conf status >/dev/null 2>&1 || exit 1
+
 STOPSIGNAL SIGTERM
 
 CMD ["supervisord", "-c", "/etc/supervisor/supervisord.conf"]
