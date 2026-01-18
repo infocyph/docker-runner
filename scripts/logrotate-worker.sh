@@ -1,20 +1,27 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Default to 3600 seconds (1 hour) if LOGROTATE_INTERVAL is not provided externally
 SLEEP_INTERVAL="${LOGROTATE_INTERVAL:-3600}"
+STATE_FILE="${LOGROTATE_STATE_FILE:-/var/lib/logrotate/status}"
+
+mkdir -p "$(dirname "$STATE_FILE")"
 
 while true; do
-    for config in /etc/logrotate.d/*; do
-        if [[ $(basename "$config") == .* ]]; then
-            continue
-        fi
+    echo "[logrotate] Running logrotate (state: $STATE_FILE)"
 
-        if [ -f "$config" ]; then
-            echo "[logrotate] Rotating logs using: $config"
-            /usr/sbin/logrotate -s /tmp/logrotate.status -f "$config"
-        fi
-    done
+    # Preferred: run the main config if it exists (it includes /etc/logrotate.d/* typically)
+    if [[ -f /etc/logrotate.conf ]]; then
+        echo "[logrotate] Using /etc/logrotate.conf"
+        /usr/sbin/logrotate -s "$STATE_FILE" /etc/logrotate.conf
+    else
+        echo "[logrotate] Using /etc/logrotate.d/* fallback"
+        for config in /etc/logrotate.d/*; do
+            [[ -f "$config" ]] || continue
+            [[ "$(basename "$config")" == .* ]] && continue
+            /usr/sbin/logrotate -s "$STATE_FILE" "$config"
+        done
+    fi
 
-    echo "[logrotate] Sleeping for ${SLEEP_INTERVAL} seconds"
+    echo "[logrotate] Sleeping for ${SLEEP_INTERVAL}s"
     sleep "$SLEEP_INTERVAL"
 done
