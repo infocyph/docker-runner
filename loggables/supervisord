@@ -2,6 +2,7 @@
     su root root
     daily
     rotate 7
+    maxage 14
     missingok
     notifempty
     compress
@@ -11,6 +12,8 @@
     dateformat -%Y%m%d
     sharedscripts
     postrotate
-        # modify if a service needs to be notified:
+        TS="$(date -u +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date)"
+        MSG="[logrotate] rotated /var/log/supervisor (daily) at ${TS}"
+        [ -w /proc/1/fd/1 ] && printf '%s\n' "$MSG" > /proc/1/fd/1 || true
     endscript
 }
