@@ -5,6 +5,7 @@
 ![Docker Image Size](https://img.shields.io/docker/image-size/infocyph/runner)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Base: Alpine](https://img.shields.io/badge/Base-Alpine-brightgreen.svg)](https://alpinelinux.org)
+
 A lightweight, Alpine-based Docker image designed to run and manage long-running processes using **Supervisor**, with built-in support for:
 
 - `docker exec` wrappers (`pexe` & `dexe`) with TTY auto-detection
