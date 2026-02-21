@@ -2,16 +2,14 @@
     su root root
     daily
     rotate 7
-    maxage 14
     missingok
     notifempty
-    compress
-    delaycompress
-    copytruncate
     dateext
     dateformat -%Y%m%d
+    create 0644 root root
     sharedscripts
     postrotate
+        supervisorctl -c /etc/supervisor/supervisord.conf reopenlogs >/dev/null 2>&1 || true
         TS="$(date -u +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date)"
         MSG="[logrotate] rotated /var/log/supervisor (daily) at ${TS}"
         [ -w /proc/1/fd/1 ] && printf '%s\n' "$MSG" > /proc/1/fd/1 || true

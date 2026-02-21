@@ -2,12 +2,12 @@
     su root root
     daily
     rotate 7
-    maxage 14
+    maxage 30
     missingok
     notifempty
+    copytruncate
     compress
     delaycompress
-    copytruncate
     dateext
     dateformat -%Y%m%d
     sharedscripts
