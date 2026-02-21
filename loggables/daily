@@ -6,9 +6,8 @@
     missingok
     notifempty
     copytruncate
-    # No compression
-    # compress
-    # delaycompress
+    compress
+    delaycompress
     dateext
     dateformat -%Y%m%d
     sharedscripts
