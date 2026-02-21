@@ -2,11 +2,8 @@
     su root root
     daily
     rotate 7
-    maxage 14
     missingok
     notifempty
-    compress
-    delaycompress
     copytruncate
     dateext
     dateformat -%Y%m%d
