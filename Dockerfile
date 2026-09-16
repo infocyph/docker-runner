@@ -33,16 +33,26 @@ RUN apk add --no-cache \
 
 COPY scripts/supervisord.conf /etc/supervisor/supervisord.conf
 COPY scripts/logrotate-worker.sh /usr/local/bin/logrotate-worker.sh
+COPY scripts/runner-healthcheck.sh /usr/local/bin/runner-healthcheck
 COPY scripts/pexe.sh /usr/local/bin/pexe
 COPY scripts/dexe.sh /usr/local/bin/dexe
 COPY loggables/ /etc/logrotate.d/
 
-# Required remote downloads (kept). Strongly recommended: pin to commit SHA or verify checksums.
-ADD https://raw.githubusercontent.com/infocyph/Scriptomatic/master/bash/banner.sh /usr/local/bin/show-banner
-ADD https://raw.githubusercontent.com/infocyph/Toolset/main/ChromaCat/chromacat /usr/local/bin/chromacat
-
-RUN chmod +x \
+RUN curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 10 \
+      "https://raw.githubusercontent.com/infocyph/Scriptomatic/main/bash/banner.sh" \
+      -o /usr/local/bin/show-banner \
+  && test -s /usr/local/bin/show-banner \
+  && bash -n /usr/local/bin/show-banner \
+  && curl -fsSLo /tmp/toolset-install.sh \
+      "https://github.com/infocyph/Toolset/releases/latest/download/install.sh" \
+  && test -s /tmp/toolset-install.sh \
+  && bash -n /tmp/toolset-install.sh \
+  && bash /tmp/toolset-install.sh --prefix /usr/local/bin chromacat \
+  && chromacat --version \
+  && rm -f /tmp/toolset-install.sh \
+  && chmod +x \
       /usr/local/bin/logrotate-worker.sh \
+      /usr/local/bin/runner-healthcheck \
       /usr/local/bin/pexe \
       /usr/local/bin/dexe \
       /usr/local/bin/show-banner \
@@ -61,9 +71,8 @@ RUN chmod +x \
     } > /etc/profile.d/banner-hook.sh \
   && chmod +x /etc/profile.d/banner-hook.sh
 
-# Healthcheck: supervisor must be up and responsive
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD supervisorctl -c /etc/supervisor/supervisord.conf status >/dev/null 2>&1 || exit 1
+  CMD ["runner-healthcheck"]
 
 STOPSIGNAL SIGTERM
 
