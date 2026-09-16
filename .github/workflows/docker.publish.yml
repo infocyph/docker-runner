@@ -235,11 +235,11 @@ jobs:
             echo "- Source tag: \`$SOURCE_TAG\`"
             echo "- Source revision: \`$SOURCE_SHA\`"
             echo "- Manifest digest: \`$DIGEST\`"
-            echo '- Platforms: `linux/amd64`, `linux/arm64`'
+            echo "- Platforms: \`linux/amd64\`, \`linux/arm64\`"
             echo "- Published amd64 Alpine: \`$alpine_version\`"
             echo "- Published amd64 chromacat: \`$chromacat_version\`"
             echo "- Published amd64 banner SHA-256: \`$banner_sha256\`"
-            echo '- BuildKit provenance: enabled (`mode=max`)'
+            echo "- BuildKit provenance: enabled (\`mode=max\`)"
             echo '- BuildKit SBOM: enabled'
             echo '- GitHub/Sigstore provenance attestations: Docker Hub + GHCR'
           } >> "$GITHUB_STEP_SUMMARY"
