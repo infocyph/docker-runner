@@ -171,6 +171,33 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
+      - name: Enforce immutable release tags
+        if: needs.resolve.outputs.publish_version == 'true'
+        env:
+          VERSION_TAG: ${{ needs.resolve.outputs.source_tag }}
+        run: |
+          set -euo pipefail
+
+          assert_absent() {
+            local image="$1" output
+            if output="$(docker buildx imagetools inspect "$image" 2>&1)"; then
+              echo "Refusing to overwrite immutable release tag: $image" >&2
+              return 1
+            fi
+
+            case "$output" in
+              *'not found'*|*'manifest unknown'*|*'NAME_UNKNOWN'*) return 0 ;;
+              *)
+                echo "Could not safely verify release-tag absence for $image:" >&2
+                echo "$output" >&2
+                return 1
+                ;;
+            esac
+          }
+
+          assert_absent "docker.io/${GITHUB_REPOSITORY_OWNER}/runner:${VERSION_TAG}"
+          assert_absent "ghcr.io/${GITHUB_REPOSITORY_OWNER}/runner:${VERSION_TAG}"
+
       - name: Generate image metadata
         id: meta
         uses: docker/metadata-action@v6
