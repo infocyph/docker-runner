@@ -120,16 +120,8 @@ jobs:
             echo "- Installed banner SHA-256: \`$banner_sha256\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Release-candidate runtime smoke
-        run: |
-          set -euo pipefail
-          image='infocyph/runner:publish-candidate'
-          bash tests/standalone-smoke.sh "$image"
-          bash tests/supervisor-smoke.sh "$image"
-          bash tests/cron-smoke.sh "$image"
-          bash tests/logrotate-smoke.sh "$image"
-          bash tests/docker-integration-smoke.sh "$image"
-          bash tests/localdevstack-contract.sh "$image" .localdevstack/docker/compose/companion.yaml
+      - name: Final release-candidate gate
+        run: bash tests/release-gate.sh infocyph/runner:publish-candidate .localdevstack/docker/compose/companion.yaml
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
