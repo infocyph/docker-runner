@@ -26,6 +26,7 @@ assert_contains scripts/logrotate-worker.sh 'trap shutdown TERM INT'
 assert_not_contains scripts/logrotate-worker.sh 'set -euo pipefail'
 
 assert_contains loggables/supervisord 'cat /run/supervisord.pid'
+# shellcheck disable=SC2016 # Intentional literal source-code assertion.
 assert_contains loggables/supervisord 'kill -USR2 "$PID"'
 assert_not_contains loggables/supervisord 'supervisorctl -c /etc/supervisor/supervisord.conf reopenlogs'
 
