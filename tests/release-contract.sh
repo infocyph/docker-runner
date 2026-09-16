@@ -17,7 +17,9 @@ assert_file tests/release-gate.sh
 assert_contains "$WORKFLOW" "cron: '0 0 * * 0'"
 # shellcheck disable=SC2016 # Intentional literal GitHub Actions expression.
 assert_contains "$WORKFLOW" 'EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}'
-assert_contains "$WORKFLOW" "gh release list --limit 1 --json tagName -q '.[0].tagName'"
+# shellcheck disable=SC2016 # Intentional literal workflow source assertion.
+assert_contains "$WORKFLOW" 'gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name'
+assert_not_contains "$WORKFLOW" 'gh release list --limit 1'
 assert_contains "$WORKFLOW" 'PUBLISH_RELEASE_TAG=false'
 # shellcheck disable=SC2016 # Intentional literal GitHub Actions expression.
 assert_contains "$WORKFLOW" 'type=raw,value=${{ env.RELEASE_TAG }},enable=${{ env.PUBLISH_RELEASE_TAG == '\''true'\'' }}'
