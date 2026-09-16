@@ -64,34 +64,24 @@ find "$SUPERVISOR_DIR" -maxdepth 1 -type f -name 'supervisord.log-*' -print -qui
     || fail "rotated Supervisor log was not created"
 [[ -f "$SUPERVISOR_DIR/supervisord.log" ]] || fail "active Supervisor log was not recreated"
 
-# Signal handling is asynchronous. Poll PID 1 until its fd targets the active file inode.
-reopened=false
-for ((i = 0; i < 10; i++)); do
-    if docker exec "$NAME" sh -ec '
-        active_inode="$(stat -c %i /var/log/supervisor/supervisord.log)"
+# SIGUSR2 is asynchronous. Poll until PID 1 has an fd whose inode matches the
+# newly-created active logfile, and print diagnostics if it never converges.
+if ! docker exec "$NAME" sh -ec '
+    active_inode="$(stat -c %i /var/log/supervisor/supervisord.log)"
+    for _ in 1 2 3 4 5; do
         for fd in /proc/1/fd/*; do
             target="$(readlink "$fd" 2>/dev/null || true)"
             [ "$target" = "/var/log/supervisor/supervisord.log" ] || continue
             fd_inode="$(stat -Lc %i "$fd")"
             [ "$fd_inode" = "$active_inode" ] && exit 0
         done
-        exit 1
-    '; then
-        reopened=true
-        break
-    fi
-    sleep 1
-done
+        sleep 1
+    done
 
-if [[ "$reopened" != true ]]; then
-    docker exec "$NAME" sh -ec '
-        echo "supervisord pidfile: $(cat /run/supervisord.pid 2>/dev/null || echo missing)" >&2
-        echo "active inode: $(stat -c %i /var/log/supervisor/supervisord.log 2>/dev/null || echo missing)" >&2
-        for fd in /proc/1/fd/*; do
-            printf "%s -> %s (inode=%s)\n" "$fd" "$(readlink "$fd" 2>/dev/null || true)" "$(stat -Lc %i "$fd" 2>/dev/null || true)" >&2
-        done
-    ' || true
-    docker logs "$NAME" >&2 || true
+    echo "active inode: $active_inode" >&2
+    ls -l /proc/1/fd >&2 || true
+    exit 1
+'; then
     fail "Supervisor PID 1 did not reopen the active logfile"
 fi
 
@@ -121,12 +111,21 @@ second_pid="$(docker exec "$FAIL_NAME" supervisorctl -c /etc/supervisor/supervis
 docker logs "$FAIL_NAME" 2>&1 | grep -F 'retrying in 2s' >/dev/null \
     || fail "bounded logrotate failure retry was not observed"
 
-# Exercise the fallback path: one broken fragment must not prevent a later valid fragment.
-FALLBACK_DIR="$TMP_DIR/fallback-config"
+# Exercise fallback mode. Create configs inside the container so logrotate sees
+# root-owned files, matching its security requirements instead of the host UID
+# of a GitHub Actions bind mount.
 FALLBACK_WORK="$TMP_DIR/fallback-work"
-mkdir -p "$FALLBACK_DIR" "$FALLBACK_WORK"
-printf 'broken directive\n' > "$FALLBACK_DIR/01-invalid"
-cat > "$FALLBACK_DIR/02-valid" <<'EOF'
+mkdir -p "$FALLBACK_WORK"
+printf 'fallback rotation payload\n' > "$FALLBACK_WORK/app.log"
+
+docker run --rm \
+    --tmpfs /etc/logrotate.d \
+    -v "$FALLBACK_WORK:/work" \
+    --entrypoint bash \
+    "$IMAGE" -ec '
+        mv /etc/logrotate.conf /etc/logrotate.conf.disabled
+        printf "broken directive\n" > /etc/logrotate.d/01-invalid
+        cat > /etc/logrotate.d/02-valid <<"EOF"
 /work/app.log {
     su root root
     size 1
@@ -136,14 +135,8 @@ cat > "$FALLBACK_DIR/02-valid" <<'EOF'
     copytruncate
 }
 EOF
-printf 'fallback rotation payload\n' > "$FALLBACK_WORK/app.log"
+        chmod 0644 /etc/logrotate.d/01-invalid /etc/logrotate.d/02-valid
 
-docker run --rm \
-    -v "$FALLBACK_DIR:/etc/logrotate.d:ro" \
-    -v "$FALLBACK_WORK:/work" \
-    --entrypoint bash \
-    "$IMAGE" -ec '
-        mv /etc/logrotate.conf /etc/logrotate.conf.disabled
         LOGROTATE_INTERVAL=30 LOGROTATE_FAILURE_INTERVAL=30 logrotate-worker.sh &
         worker=$!
         for _ in $(seq 1 10); do
