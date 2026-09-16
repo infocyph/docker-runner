@@ -4,91 +4,242 @@ on:
   release:
     types: [published]
   schedule:
-    - cron: '0 0 * * */2'
+    - cron: '17 3 * * 3'
+  workflow_dispatch:
+
+concurrency:
+  group: docker-publish
+  cancel-in-progress: false
 
 jobs:
-  push_to_registries:
-    name: Push Docker image to Docker Hub and GHCR
+  resolve:
+    name: Resolve publish source
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      should_publish: ${{ steps.resolve.outputs.should_publish }}
+      source_tag: ${{ steps.resolve.outputs.source_tag }}
+      publish_version: ${{ steps.resolve.outputs.publish_version }}
+    steps:
+      - name: Resolve source tag and cadence
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_EVENT_TAG: ${{ github.event.release.tag_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          should_publish=true
+          publish_version=false
+          source_tag=''
+
+          if [[ "$EVENT_NAME" == 'release' ]]; then
+            source_tag="$RELEASE_EVENT_TAG"
+            publish_version=true
+          elif [[ "$EVENT_NAME" == 'schedule' ]]; then
+            iso_week="$(date -u +%V)"
+            week_number="$((10#$iso_week))"
+            if (( week_number % 2 != 0 )); then
+              should_publish=false
+            else
+              source_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+            fi
+          else
+            source_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+          fi
+
+          if [[ "$should_publish" == 'true' && -z "$source_tag" ]]; then
+            echo 'No release source tag could be resolved.' >&2
+            exit 1
+          fi
+
+          {
+            echo "should_publish=$should_publish"
+            echo "source_tag=$source_tag"
+            echo "publish_version=$publish_version"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo '## Publish resolution'
+            echo
+            echo "- Event: \`$EVENT_NAME\`"
+            echo "- Should publish: \`$should_publish\`"
+            if [[ -n "$source_tag" ]]; then
+              echo "- Runner source tag: \`$source_tag\`"
+            fi
+            if [[ "$EVENT_NAME" == 'schedule' ]]; then
+              echo "- ISO week: \`$(date -u +%V)\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Build, verify and publish Runner
+    needs: resolve
+    if: needs.resolve.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
     permissions:
       contents: read
       packages: write
       attestations: write
+      artifact-metadata: write
       id-token: write
     steps:
-      - name: Check out the repository
-        uses: actions/checkout@v4
-
-      - name: Set RELEASE_TAG environment variable
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          echo "Fetching latest release tag..."
-          RELEASE_TAG=$(gh release list --limit 1 --json tagName -q '.[0].tagName')
-          if [ -z "$RELEASE_TAG" ]; then
-            echo "No release found. Exiting."
-            exit 1
-          fi
-          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
-          echo "Using release tag: $RELEASE_TAG"
-
-      - name: Set IMAGE_NAME environment variable
-        run: |
-          IMAGE_NAME=$(echo "$GITHUB_REPOSITORY" | cut -d'/' -f2 | sed 's/^docker-//')
-          echo "IMAGE_NAME=$IMAGE_NAME" >> "$GITHUB_ENV"
-          echo "Computed IMAGE_NAME: $IMAGE_NAME"
-
-      - name: Check out the repo at the latest release tag
-        uses: actions/checkout@v4
+      - name: Checkout exact Runner release source
+        uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.resolve.outputs.source_tag }}
+          persist-credentials: false
+
+      - name: Capture Runner source revision
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout LocalDevStack main
+        uses: actions/checkout@v7
+        with:
+          repository: infocyph/LocalDevStack
+          ref: main
+          path: .localdevstack
+          persist-credentials: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build fresh amd64 release candidate
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          pull: true
+          no-cache: true
+          push: false
+          tags: infocyph/runner:publish-candidate
+          cache-to: type=gha,scope=publish-candidate,mode=max
+
+      - name: Record candidate upstream resolution
+        env:
+          IMAGE: infocyph/runner:publish-candidate
+        run: |
+          set -euo pipefail
+          alpine_version="$(docker run --rm --entrypoint cat "$IMAGE" /etc/alpine-release)"
+          chromacat_version="$(docker run --rm --entrypoint chromacat "$IMAGE" --version | head -n 1)"
+          banner_sha256="$(docker run --rm --entrypoint sha256sum "$IMAGE" /usr/local/bin/show-banner | awk '{print $1}')"
+          scriptomatic_main="$(git ls-remote https://github.com/infocyph/Scriptomatic.git refs/heads/main | awk '{print $1}')"
+          toolset_release="$(curl -fsSL https://api.github.com/repos/infocyph/Toolset/releases/latest | jq -r .tag_name)"
+          {
+            echo '## Candidate upstream resolution'
+            echo
+            echo "- Alpine: \`$alpine_version\`"
+            echo "- chromacat: \`$chromacat_version\`"
+            echo "- Toolset latest release: \`$toolset_release\`"
+            echo "- Scriptomatic main: \`$scriptomatic_main\`"
+            echo "- Installed banner SHA-256: \`$banner_sha256\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Release-candidate runtime smoke
+        run: |
+          set -euo pipefail
+          image='infocyph/runner:publish-candidate'
+          bash tests/standalone-smoke.sh "$image"
+          bash tests/supervisor-smoke.sh "$image"
+          bash tests/cron-smoke.sh "$image"
+          bash tests/logrotate-smoke.sh "$image"
+          bash tests/docker-integration-smoke.sh "$image"
+          bash tests/localdevstack-contract.sh "$image" .localdevstack/docker/compose/companion.yaml
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: docker.io
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Log in to GitHub Container Registry (GHCR)
-        uses: docker/login-action@v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Extract metadata (tags, labels) for Docker
+      - name: Generate image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
-            docker.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
-            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+            docker.io/${{ github.repository_owner }}/runner
+            ghcr.io/${{ github.repository_owner }}/runner
+          flavor: |
+            latest=false
           tags: |
-            ${{ env.RELEASE_TAG }}
-            latest
+            type=raw,value=latest
+            type=raw,value=${{ needs.resolve.outputs.source_tag }},enable=${{ needs.resolve.outputs.publish_version == 'true' }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
+            org.opencontainers.image.version=${{ needs.resolve.outputs.source_tag }}
 
-      - name: Build and push Docker images
+      - name: Build and push multi-architecture image
         id: push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
+          pull: true
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=publish-candidate
+          cache-to: type=gha,scope=publish-multiarch,mode=max
+          provenance: mode=max
+          sbom: true
 
-      - name: Generate artifact attestation for Docker Hub
-        uses: actions/attest-build-provenance@v2
+      - name: Attest Docker Hub image provenance
+        uses: actions/attest@v4
         with:
-          subject-name: docker.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          subject-name: docker.io/${{ github.repository_owner }}/runner
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
-          github-token: ${{ github.token }}
 
-      - name: Generate artifact attestation for GHCR
-        uses: actions/attest-build-provenance@v2
+      - name: Attest GHCR image provenance
+        uses: actions/attest@v4
         with:
-          subject-name: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          subject-name: ghcr.io/${{ github.repository_owner }}/runner
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
-          github-token: ${{ github.token }}
+
+      - name: Verify and summarize published image
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          SOURCE_TAG: ${{ needs.resolve.outputs.source_tag }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/runner@${DIGEST}"
+          docker pull --platform linux/amd64 "$image" >/dev/null
+          alpine_version="$(docker run --rm --platform linux/amd64 --entrypoint cat "$image" /etc/alpine-release)"
+          chromacat_version="$(docker run --rm --platform linux/amd64 --entrypoint chromacat "$image" --version | head -n 1)"
+          banner_sha256="$(docker run --rm --platform linux/amd64 --entrypoint sha256sum "$image" /usr/local/bin/show-banner | awk '{print $1}')"
+          {
+            echo '## Published Runner image'
+            echo
+            echo "- Source tag: \`$SOURCE_TAG\`"
+            echo "- Source revision: \`$SOURCE_SHA\`"
+            echo "- Manifest digest: \`$DIGEST\`"
+            echo '- Platforms: `linux/amd64`, `linux/arm64`'
+            echo "- Published amd64 Alpine: \`$alpine_version\`"
+            echo "- Published amd64 chromacat: \`$chromacat_version\`"
+            echo "- Published amd64 banner SHA-256: \`$banner_sha256\`"
+            echo '- BuildKit provenance: enabled (`mode=max`)'
+            echo '- BuildKit SBOM: enabled'
+            echo '- GitHub/Sigstore provenance attestations: Docker Hub + GHCR'
+          } >> "$GITHUB_STEP_SUMMARY"
