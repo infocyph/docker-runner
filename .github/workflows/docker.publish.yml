@@ -35,14 +35,17 @@ jobs:
           should_publish=true
           publish_version=false
           source_tag=''
+          cadence_offset=''
 
           if [[ "$EVENT_NAME" == 'release' ]]; then
             source_tag="$RELEASE_EVENT_TAG"
             publish_version=true
           elif [[ "$EVENT_NAME" == 'schedule' ]]; then
-            iso_week="$(date -u +%V)"
-            week_number="$((10#$iso_week))"
-            if (( week_number % 2 != 0 )); then
+            anchor_epoch="$(date -u -d '2026-09-16 00:00:00' +%s)"
+            current_epoch="$(date -u -d "$(date -u +%F) 00:00:00" +%s)"
+            cadence_offset="$(( (current_epoch - anchor_epoch) / 86400 ))"
+
+            if (( cadence_offset < 0 || cadence_offset % 14 != 0 )); then
               should_publish=false
             else
               source_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
@@ -71,7 +74,8 @@ jobs:
               echo "- Runner source tag: \`$source_tag\`"
             fi
             if [[ "$EVENT_NAME" == 'schedule' ]]; then
-              echo "- ISO week: \`$(date -u +%V)\`"
+              echo '- Cadence anchor: `2026-09-16`'
+              echo "- Days from anchor: \`$cadence_offset\`"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
