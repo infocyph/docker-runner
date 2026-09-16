@@ -37,6 +37,9 @@ jobs:
       - name: Dependency contracts
         run: bash tests/dependency-contract.sh
 
+      - name: Runtime contracts
+        run: bash tests/runtime-contract.sh
+
       - name: Helper smoke tests
         run: bash tests/helpers-smoke.sh
 
@@ -52,6 +55,7 @@ jobs:
 
   build:
     name: Build current Runner image
+    needs: static
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
