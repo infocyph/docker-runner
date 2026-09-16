@@ -40,8 +40,8 @@ jobs:
             RELEASE_TAG="$EVENT_RELEASE_TAG"
             PUBLISH_RELEASE_TAG=true
           else
-            echo 'Scheduled/manual refresh: resolving latest published Runner release.'
-            RELEASE_TAG="$(gh release list --limit 1 --json tagName -q '.[0].tagName')"
+            echo 'Scheduled/manual refresh: resolving latest stable published Runner release.'
+            RELEASE_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
             PUBLISH_RELEASE_TAG=false
           fi
 
