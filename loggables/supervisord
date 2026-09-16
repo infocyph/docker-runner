@@ -9,7 +9,11 @@
     create 0644 root root
     sharedscripts
     postrotate
-        supervisorctl -c /etc/supervisor/supervisord.conf reopenlogs >/dev/null 2>&1 || true
+        PID="$(cat /run/supervisord.pid 2>/dev/null || true)"
+        case "$PID" in
+            ''|*[!0-9]*) ;;
+            *) kill -USR2 "$PID" 2>/dev/null || true ;;
+        esac
         TS="$(date -u +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date)"
         MSG="[logrotate] rotated /var/log/supervisor (daily) at ${TS}"
         [ -w /proc/1/fd/1 ] && printf '%s\n' "$MSG" > /proc/1/fd/1 || true
