@@ -64,18 +64,36 @@ find "$SUPERVISOR_DIR" -maxdepth 1 -type f -name 'supervisord.log-*' -print -qui
     || fail "rotated Supervisor log was not created"
 [[ -f "$SUPERVISOR_DIR/supervisord.log" ]] || fail "active Supervisor log was not recreated"
 
-# Check the actual file descriptor rather than relying on an immediate follow-up log message.
-# A successful reopen means PID 1 has an fd whose inode matches the new active logfile.
-docker exec "$NAME" sh -ec '
-    active_inode="$(stat -c %i /var/log/supervisor/supervisord.log)"
-    for fd in /proc/1/fd/*; do
-        target="$(readlink "$fd" 2>/dev/null || true)"
-        [ "$target" = "/var/log/supervisor/supervisord.log" ] || continue
-        fd_inode="$(stat -Lc %i "$fd")"
-        [ "$fd_inode" = "$active_inode" ] && exit 0
-    done
-    exit 1
-' || fail "Supervisor PID 1 did not reopen the active logfile"
+# Signal handling is asynchronous. Poll PID 1 until its fd targets the active file inode.
+reopened=false
+for ((i = 0; i < 10; i++)); do
+    if docker exec "$NAME" sh -ec '
+        active_inode="$(stat -c %i /var/log/supervisor/supervisord.log)"
+        for fd in /proc/1/fd/*; do
+            target="$(readlink "$fd" 2>/dev/null || true)"
+            [ "$target" = "/var/log/supervisor/supervisord.log" ] || continue
+            fd_inode="$(stat -Lc %i "$fd")"
+            [ "$fd_inode" = "$active_inode" ] && exit 0
+        done
+        exit 1
+    '; then
+        reopened=true
+        break
+    fi
+    sleep 1
+done
+
+if [[ "$reopened" != true ]]; then
+    docker exec "$NAME" sh -ec '
+        echo "supervisord pidfile: $(cat /run/supervisord.pid 2>/dev/null || echo missing)" >&2
+        echo "active inode: $(stat -c %i /var/log/supervisor/supervisord.log 2>/dev/null || echo missing)" >&2
+        for fd in /proc/1/fd/*; do
+            printf "%s -> %s (inode=%s)\n" "$fd" "$(readlink "$fd" 2>/dev/null || true)" "$(stat -Lc %i "$fd" 2>/dev/null || true)" >&2
+        done
+    ' || true
+    docker logs "$NAME" >&2 || true
+    fail "Supervisor PID 1 did not reopen the active logfile"
+fi
 
 # A bad fragment must not cause Supervisor to restart-loop the worker.
 printf 'this is intentionally invalid logrotate syntax\n' > "$TMP_DIR/zz-invalid"
