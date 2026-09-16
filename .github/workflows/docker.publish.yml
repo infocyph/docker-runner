@@ -74,7 +74,7 @@ jobs:
               echo "- Runner source tag: \`$source_tag\`"
             fi
             if [[ "$EVENT_NAME" == 'schedule' ]]; then
-              echo '- Cadence anchor: `2026-09-16`'
+              echo '- Cadence anchor: 2026-09-16'
               echo "- Days from anchor: \`$cadence_offset\`"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
