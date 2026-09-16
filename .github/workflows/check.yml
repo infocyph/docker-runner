@@ -53,28 +53,29 @@ jobs:
       - name: Lint workflows
         run: "${{ runner.temp }}/bin/actionlint"
 
-  build:
-    name: Build current Runner image
+  runtime:
+    name: Build and runtime smoke
     needs: static
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      - name: Checkout
+      - name: Checkout Runner
         uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Build image
+      - name: Build amd64 image
         uses: docker/build-push-action@v7
         with:
           context: .
+          platforms: linux/amd64
           load: true
           pull: true
           push: false
           tags: infocyph/runner:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=check-amd64
+          cache-to: type=gha,scope=check-amd64,mode=max
 
       - name: Verify expected image commands
         run: |
@@ -89,3 +90,84 @@ jobs:
             command -v runner-healthcheck >/dev/null &&
             chromacat --version
           '
+
+      - name: Standalone smoke
+        run: bash tests/standalone-smoke.sh infocyph/runner:ci
+
+      - name: Supervisor health semantics
+        run: bash tests/supervisor-smoke.sh infocyph/runner:ci
+
+      - name: Cronie smoke
+        run: bash tests/cron-smoke.sh infocyph/runner:ci
+
+      - name: Logrotate smoke
+        run: bash tests/logrotate-smoke.sh infocyph/runner:ci
+
+      - name: Docker helper integration
+        run: bash tests/docker-integration-smoke.sh infocyph/runner:ci
+
+      - name: Checkout LocalDevStack main
+        uses: actions/checkout@v7
+        with:
+          repository: infocyph/LocalDevStack
+          ref: main
+          path: .localdevstack
+          persist-credentials: false
+
+      - name: LocalDevStack compatibility gate
+        run: bash tests/localdevstack-contract.sh infocyph/runner:ci .localdevstack/docker/compose/companion.yaml
+
+  arm64:
+    name: arm64 build and startup smoke
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build arm64 image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/arm64
+          load: true
+          pull: true
+          push: false
+          tags: infocyph/runner:ci-arm64
+          cache-from: type=gha,scope=check-arm64
+          cache-to: type=gha,scope=check-arm64,mode=max
+
+      - name: arm64 command smoke
+        run: |
+          docker run --rm --platform linux/arm64 --entrypoint sh infocyph/runner:ci-arm64 -lc '
+            test "$(uname -m)" = "aarch64" &&
+            chromacat --version &&
+            bash -n /usr/local/bin/show-banner
+          '
+
+      - name: arm64 startup smoke
+        run: |
+          name="runner-arm64-${RANDOM}"
+          trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+          docker run -d \
+            --platform linux/arm64 \
+            --name "$name" \
+            infocyph/runner:ci-arm64 >/dev/null
+          for _ in $(seq 1 20); do
+            if docker exec "$name" runner-healthcheck >/dev/null 2>&1; then
+              docker exec "$name" supervisorctl -c /etc/supervisor/supervisord.conf status cron logrotate
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$name"
+          exit 1
