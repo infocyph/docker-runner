@@ -17,10 +17,11 @@ assert_not_contains Dockerfile 'SCRIPTOMATIC_REF'
 assert_not_contains Dockerfile 'TOOLSET_VERSION'
 assert_not_contains Dockerfile 'Toolset/main/'
 assert_not_contains Dockerfile 'bash /tmp/toolset-install.sh --all'
-assert_not_contains Dockerfile 'FROM alpine:'
 
-# The exact expected base is allowed; reject any additional Alpine FROM line.
 alpine_from_count="$(grep -Ec '^FROM[[:space:]]+alpine:' Dockerfile || true)"
 [ "$alpine_from_count" -eq 1 ] || fail "expected exactly one Alpine FROM line"
+
+alpine_from="$(grep -E '^FROM[[:space:]]+alpine:' Dockerfile)"
+[ "$alpine_from" = 'FROM alpine:latest' ] || fail "Alpine base must remain exactly: FROM alpine:latest"
 
 pass "dependency contracts"
