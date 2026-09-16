@@ -7,12 +7,15 @@ cd "$ROOT"
 # shellcheck source=tests/assertions.sh
 . tests/assertions.sh
 
-for file in scripts/dexe.sh scripts/pexe.sh; do
+for file in scripts/dexe.sh scripts/pexe.sh scripts/runner-healthcheck.sh; do
     assert_file "$file"
     sh -n "$file"
 done
 
-for file in scripts/logrotate-worker.sh scripts/runner-healthcheck.sh tests/*.sh; do
+assert_file scripts/logrotate-worker.sh
+bash -n scripts/logrotate-worker.sh
+
+for file in tests/*.sh; do
     assert_file "$file"
     bash -n "$file"
 done
