@@ -81,12 +81,17 @@ docker run -d \
     -v "$TMP_DIR/zz-invalid:/etc/logrotate.d/zz-invalid:ro" \
     "$IMAGE" >/dev/null
 
+first_pid=''
 for ((i = 0; i < 20; i++)); do
     first_pid="$(docker exec "$FAIL_NAME" supervisorctl -c /etc/supervisor/supervisord.conf pid logrotate 2>/dev/null || true)"
-    [[ "$first_pid" =~ ^[0-9]+$ ]] && [[ "$first_pid" -gt 0 ]] && break
+    if [[ "$first_pid" =~ ^[0-9]+$ ]] && [[ "$first_pid" -gt 0 ]]; then
+        break
+    fi
     sleep 1
 done
-[[ "${first_pid:-0}" =~ ^[0-9]+$ ]] && [[ "${first_pid:-0}" -gt 0 ]] || fail "logrotate worker did not start"
+if [[ ! "$first_pid" =~ ^[0-9]+$ ]] || [[ "$first_pid" -le 0 ]]; then
+    fail "logrotate worker did not start"
+fi
 sleep 5
 second_pid="$(docker exec "$FAIL_NAME" supervisorctl -c /etc/supervisor/supervisord.conf pid logrotate)"
 [[ "$first_pid" == "$second_pid" ]] || fail "logrotate worker restarted after config failure"
