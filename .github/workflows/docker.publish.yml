@@ -4,7 +4,7 @@ on:
   release:
     types: [published]
   schedule:
-    - cron: '17 3 * * 3'
+    - cron: '0 0 * * 0'
   workflow_dispatch:
 
 concurrency:
@@ -12,77 +12,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  resolve:
-    name: Resolve publish source
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    outputs:
-      should_publish: ${{ steps.resolve.outputs.should_publish }}
-      source_tag: ${{ steps.resolve.outputs.source_tag }}
-      publish_version: ${{ steps.resolve.outputs.publish_version }}
-    steps:
-      - name: Resolve source tag and cadence
-        id: resolve
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          RELEASE_EVENT_TAG: ${{ github.event.release.tag_name }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          should_publish=true
-          publish_version=false
-          source_tag=''
-          cadence_offset=''
-
-          if [[ "$EVENT_NAME" == 'release' ]]; then
-            source_tag="$RELEASE_EVENT_TAG"
-            publish_version=true
-          elif [[ "$EVENT_NAME" == 'schedule' ]]; then
-            anchor_epoch="$(date -u -d '2026-09-16 00:00:00' +%s)"
-            current_epoch="$(date -u -d "$(date -u +%F) 00:00:00" +%s)"
-            cadence_offset="$(( (current_epoch - anchor_epoch) / 86400 ))"
-
-            if (( cadence_offset < 0 || cadence_offset % 14 != 0 )); then
-              should_publish=false
-            else
-              source_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
-            fi
-          else
-            source_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
-          fi
-
-          if [[ "$should_publish" == 'true' && -z "$source_tag" ]]; then
-            echo 'No release source tag could be resolved.' >&2
-            exit 1
-          fi
-
-          {
-            echo "should_publish=$should_publish"
-            echo "source_tag=$source_tag"
-            echo "publish_version=$publish_version"
-          } >> "$GITHUB_OUTPUT"
-
-          {
-            echo '## Publish resolution'
-            echo
-            echo "- Event: \`$EVENT_NAME\`"
-            echo "- Should publish: \`$should_publish\`"
-            if [[ -n "$source_tag" ]]; then
-              echo "- Runner source tag: \`$source_tag\`"
-            fi
-            if [[ "$EVENT_NAME" == 'schedule' ]]; then
-              echo '- Cadence anchor: 2026-09-16'
-              echo "- Days from anchor: \`$cadence_offset\`"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
   publish:
     name: Build, verify and publish Runner
-    needs: resolve
-    if: needs.resolve.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 50
     permissions:
@@ -92,17 +23,56 @@ jobs:
       artifact-metadata: write
       id-token: write
     steps:
-      - name: Checkout exact Runner release source
+      - name: Check out repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.resolve.outputs.source_tag }}
+          persist-credentials: false
+
+      - name: Resolve release source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == 'release' ]]; then
+            RELEASE_TAG="$EVENT_RELEASE_TAG"
+            PUBLISH_RELEASE_TAG=true
+          else
+            echo 'Scheduled/manual refresh: resolving latest published Runner release.'
+            RELEASE_TAG="$(gh release list --limit 1 --json tagName -q '.[0].tagName')"
+            PUBLISH_RELEASE_TAG=false
+          fi
+
+          if [[ -z "$RELEASE_TAG" ]]; then
+            echo 'No published Runner release found.' >&2
+            exit 1
+          fi
+
+          {
+            echo "RELEASE_TAG=$RELEASE_TAG"
+            echo "PUBLISH_RELEASE_TAG=$PUBLISH_RELEASE_TAG"
+          } >> "$GITHUB_ENV"
+
+          {
+            echo '## Publish resolution'
+            echo
+            echo "- Event: \`$EVENT_NAME\`"
+            echo "- Runner source release: \`$RELEASE_TAG\`"
+            echo "- Publish immutable release tag: \`$PUBLISH_RELEASE_TAG\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check out exact Runner release source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
           persist-credentials: false
 
       - name: Capture Runner source revision
-        id: source
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        run: echo "RUNNER_SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
-      - name: Checkout LocalDevStack main
+      - name: Check out LocalDevStack main
         uses: actions/checkout@v7
         with:
           repository: infocyph/LocalDevStack
@@ -176,9 +146,9 @@ jobs:
           password: ${{ github.token }}
 
       - name: Enforce immutable release tags
-        if: needs.resolve.outputs.publish_version == 'true'
+        if: env.PUBLISH_RELEASE_TAG == 'true'
         env:
-          VERSION_TAG: ${{ needs.resolve.outputs.source_tag }}
+          VERSION_TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
 
@@ -202,7 +172,7 @@ jobs:
           assert_absent "docker.io/${GITHUB_REPOSITORY_OWNER}/runner:${VERSION_TAG}"
           assert_absent "ghcr.io/${GITHUB_REPOSITORY_OWNER}/runner:${VERSION_TAG}"
 
-      - name: Generate image metadata
+      - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
@@ -212,12 +182,12 @@ jobs:
           flavor: |
             latest=false
           tags: |
+            type=raw,value=${{ env.RELEASE_TAG }},enable=${{ env.PUBLISH_RELEASE_TAG == 'true' }}
             type=raw,value=latest
-            type=raw,value=${{ needs.resolve.outputs.source_tag }},enable=${{ needs.resolve.outputs.publish_version == 'true' }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
-            org.opencontainers.image.version=${{ needs.resolve.outputs.source_tag }}
+            org.opencontainers.image.revision=${{ env.RUNNER_SOURCE_SHA }}
+            org.opencontainers.image.version=${{ env.RELEASE_TAG }}
 
       - name: Build and push multi-architecture image
         id: push
@@ -234,14 +204,14 @@ jobs:
           provenance: mode=max
           sbom: true
 
-      - name: Attest Docker Hub image provenance
+      - name: Generate Docker Hub provenance attestation
         uses: actions/attest@v4
         with:
           subject-name: docker.io/${{ github.repository_owner }}/runner
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
-      - name: Attest GHCR image provenance
+      - name: Generate GHCR provenance attestation
         uses: actions/attest@v4
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/runner
@@ -251,8 +221,6 @@ jobs:
       - name: Verify and summarize published image
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
-          SOURCE_TAG: ${{ needs.resolve.outputs.source_tag }}
-          SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/runner@${DIGEST}"
@@ -263,8 +231,8 @@ jobs:
           {
             echo '## Published Runner image'
             echo
-            echo "- Source tag: \`$SOURCE_TAG\`"
-            echo "- Source revision: \`$SOURCE_SHA\`"
+            echo "- Source tag: \`$RELEASE_TAG\`"
+            echo "- Source revision: \`$RUNNER_SOURCE_SHA\`"
             echo "- Manifest digest: \`$DIGEST\`"
             echo "- Platforms: \`linux/amd64\`, \`linux/arm64\`"
             echo "- Published amd64 Alpine: \`$alpine_version\`"
