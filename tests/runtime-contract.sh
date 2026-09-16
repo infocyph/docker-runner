@@ -20,6 +20,7 @@ assert_contains scripts/supervisord.conf 'command=/usr/sbin/crond -f -P -p'
 assert_contains scripts/logrotate-worker.sh 'DEFAULT_INTERVAL=3600'
 assert_contains scripts/logrotate-worker.sh 'DEFAULT_FAILURE_INTERVAL=60'
 assert_contains scripts/logrotate-worker.sh 'LOGROTATE_FAILURE_INTERVAL'
+# shellcheck disable=SC2016 # Intentional literal source-code assertion.
 assert_contains scripts/logrotate-worker.sh 'run_config "$config" || failed=1'
 assert_contains scripts/logrotate-worker.sh 'trap shutdown TERM INT'
 assert_not_contains scripts/logrotate-worker.sh 'set -euo pipefail'
