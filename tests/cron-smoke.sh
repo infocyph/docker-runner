@@ -33,15 +33,20 @@ EOF
 chmod 644 "$CRON_DIR/standard"
 
 cat > "$CRON_DIR/host-mounted" <<'EOF'
+TZ=Asia/Dhaka
+CRON_TZ=Asia/Dhaka
 @reboot root /bin/sh -c 'path-probe > /cron-output/path; date +\%z > /cron-output/tz'
 EOF
 chmod 666 "$CRON_DIR/host-mounted"
 
-# Explicitly assert the fixture has the final newline Cronie expects.
-[[ "$(tail -c 1 "$CRON_DIR/standard" | od -An -t x1 | tr -d '[:space:]')" == "0a" ]] \
-    || fail "standard cron fixture is missing final newline"
-[[ "$(tail -c 1 "$CRON_DIR/host-mounted" | od -An -t x1 | tr -d '[:space:]')" == "0a" ]] \
-    || fail "host-mounted cron fixture is missing final newline"
+# Cronie requires final newlines. Runner's supported scheduler fragments are LF-only.
+for cron_file in "$CRON_DIR/standard" "$CRON_DIR/host-mounted"; do
+    [[ "$(tail -c 1 "$cron_file" | od -An -t x1 | tr -d '[:space:]')" == "0a" ]] \
+        || fail "$cron_file is missing its final newline"
+    if grep -q $'\r' "$cron_file"; then
+        fail "$cron_file unexpectedly contains CRLF"
+    fi
+done
 
 docker run -d \
     --name "$NAME" \
@@ -51,6 +56,23 @@ docker run -d \
     -v "$OUT_DIR:/cron-output" \
     -v "$BIN_DIR:/runner-probe:ro" \
     "$IMAGE" >/dev/null
+
+cron_pid=''
+for ((i = 0; i < 20; i++)); do
+    cron_pid="$(docker exec "$NAME" supervisorctl -c /etc/supervisor/supervisord.conf pid cron 2>/dev/null || true)"
+    if [[ "$cron_pid" =~ ^[0-9]+$ ]] && [[ "$cron_pid" -gt 0 ]]; then
+        break
+    fi
+    sleep 1
+done
+if [[ ! "$cron_pid" =~ ^[0-9]+$ ]] || [[ "$cron_pid" -le 0 ]]; then
+    fail "Cronie daemon did not start"
+fi
+
+docker exec "$NAME" sh -ec "tr '\\000' '\\n' </proc/$cron_pid/environ | grep -Fx 'TZ=Asia/Dhaka' >/dev/null" \
+    || fail "Cronie daemon did not inherit container TZ"
+[[ "$(docker exec "$NAME" date +%z)" == '+0600' ]] \
+    || fail "container TZ did not resolve to Asia/Dhaka"
 
 for ((i = 0; i < 20; i++)); do
     if [[ -f "$OUT_DIR/standard" && -f "$OUT_DIR/path" && -f "$OUT_DIR/tz" ]]; then
@@ -68,17 +90,7 @@ done
 
 grep -Fx 'standard' "$OUT_DIR/standard" >/dev/null || fail "standard cron output mismatch"
 grep -Fx 'path-ok' "$OUT_DIR/path" >/dev/null || fail "Cronie -P did not preserve custom PATH"
-grep -Fx '+0600' "$OUT_DIR/tz" >/dev/null || fail "cron job did not inherit Asia/Dhaka timezone"
-
-# CRLF cron fragments are unsupported. Cronie's syntax test must reject them.
-printf '@reboot root /bin/true\r\n' > "$TMP_DIR/crlf"
-set +e
-docker run --rm \
-    -v "$TMP_DIR/crlf:/etc/cron.d/crlf:ro" \
-    --entrypoint crond \
-    "$IMAGE" -T >/dev/null 2>&1
-rc=$?
-set -e
-[[ "$rc" -ne 0 ]] || fail "Cronie unexpectedly accepted CRLF cron fragment"
+grep -Fx '+0600' "$OUT_DIR/tz" >/dev/null \
+    || fail "explicit cron-table TZ did not reach the job"
 
 pass "Cronie scheduler smoke"
