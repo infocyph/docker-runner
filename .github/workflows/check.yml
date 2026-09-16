@@ -57,7 +57,7 @@ jobs:
         run: "${{ runner.temp }}/bin/actionlint"
 
   runtime:
-    name: Build and runtime smoke
+    name: Build and release gate
     needs: static
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -94,21 +94,6 @@ jobs:
             chromacat --version
           '
 
-      - name: Standalone smoke
-        run: bash tests/standalone-smoke.sh infocyph/runner:ci
-
-      - name: Supervisor health semantics
-        run: bash tests/supervisor-smoke.sh infocyph/runner:ci
-
-      - name: Cronie smoke
-        run: bash tests/cron-smoke.sh infocyph/runner:ci
-
-      - name: Logrotate smoke
-        run: bash tests/logrotate-smoke.sh infocyph/runner:ci
-
-      - name: Docker helper integration
-        run: bash tests/docker-integration-smoke.sh infocyph/runner:ci
-
       - name: Checkout LocalDevStack main
         uses: actions/checkout@v7
         with:
@@ -117,8 +102,8 @@ jobs:
           path: .localdevstack
           persist-credentials: false
 
-      - name: LocalDevStack compatibility gate
-        run: bash tests/localdevstack-contract.sh infocyph/runner:ci .localdevstack/docker/compose/companion.yaml
+      - name: Final Runner release gate
+        run: bash tests/release-gate.sh infocyph/runner:ci .localdevstack/docker/compose/companion.yaml
 
   arm64:
     name: arm64 build and startup smoke
