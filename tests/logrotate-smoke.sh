@@ -100,7 +100,7 @@ fi
 sleep 5
 second_pid="$(docker exec "$FAIL_NAME" supervisorctl -c /etc/supervisor/supervisord.conf pid logrotate)"
 [[ "$first_pid" == "$second_pid" ]] || fail "logrotate worker restarted after config failure"
-docker logs "$FAIL_NAME" 2>&1 | grep -F 'Retrying in 2s' >/dev/null \
+docker logs "$FAIL_NAME" 2>&1 | grep -F 'retrying in 2s' >/dev/null \
     || fail "bounded logrotate failure retry was not observed"
 
 # Exercise the fallback path: one broken fragment must not prevent a later valid fragment.
