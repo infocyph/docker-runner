@@ -40,6 +40,9 @@ jobs:
       - name: Runtime contracts
         run: bash tests/runtime-contract.sh
 
+      - name: Release contracts
+        run: bash tests/release-contract.sh
+
       - name: Helper smoke tests
         run: bash tests/helpers-smoke.sh
 
