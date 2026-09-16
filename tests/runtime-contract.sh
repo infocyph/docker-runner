@@ -25,4 +25,8 @@ assert_contains scripts/logrotate-worker.sh 'run_config "$config" || failed=1'
 assert_contains scripts/logrotate-worker.sh 'trap shutdown TERM INT'
 assert_not_contains scripts/logrotate-worker.sh 'set -euo pipefail'
 
+assert_contains loggables/supervisord 'cat /run/supervisord.pid'
+assert_contains loggables/supervisord 'kill -USR2 "$PID"'
+assert_not_contains loggables/supervisord 'supervisorctl -c /etc/supervisor/supervisord.conf reopenlogs'
+
 pass "runtime hardening contracts"
