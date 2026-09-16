@@ -43,7 +43,7 @@ docker run --rm \
 find "$LOG_DIR/service" -maxdepth 1 -type f -name 'app.log-*' -print -quit | grep -q . \
     || fail "dated rotated log was not created"
 
-# Supervisor logs must rotate externally, reopen, and continue receiving writes.
+# Supervisor logs must rotate externally and PID 1 must reopen the new active file.
 SUPERVISOR_DIR="$TMP_DIR/supervisor"
 mkdir -p "$SUPERVISOR_DIR"
 docker run -d \
@@ -64,13 +64,18 @@ find "$SUPERVISOR_DIR" -maxdepth 1 -type f -name 'supervisord.log-*' -print -qui
     || fail "rotated Supervisor log was not created"
 [[ -f "$SUPERVISOR_DIR/supervisord.log" ]] || fail "active Supervisor log was not recreated"
 
-docker exec "$NAME" supervisorctl -c /etc/supervisor/supervisord.conf stop cron >/dev/null
-docker exec "$NAME" supervisorctl -c /etc/supervisor/supervisord.conf start cron >/dev/null
-for ((i = 0; i < 10; i++)); do
-    [[ -s "$SUPERVISOR_DIR/supervisord.log" ]] && break
-    sleep 1
-done
-[[ -s "$SUPERVISOR_DIR/supervisord.log" ]] || fail "Supervisor did not continue writing after reopenlogs"
+# Check the actual file descriptor rather than relying on an immediate follow-up log message.
+# A successful reopen means PID 1 has an fd whose inode matches the new active logfile.
+docker exec "$NAME" sh -ec '
+    active_inode="$(stat -c %i /var/log/supervisor/supervisord.log)"
+    for fd in /proc/1/fd/*; do
+        target="$(readlink "$fd" 2>/dev/null || true)"
+        [ "$target" = "/var/log/supervisor/supervisord.log" ] || continue
+        fd_inode="$(stat -Lc %i "$fd")"
+        [ "$fd_inode" = "$active_inode" ] && exit 0
+    done
+    exit 1
+' || fail "Supervisor PID 1 did not reopen the active logfile"
 
 # A bad fragment must not cause Supervisor to restart-loop the worker.
 printf 'this is intentionally invalid logrotate syntax\n' > "$TMP_DIR/zz-invalid"
