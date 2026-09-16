@@ -24,20 +24,20 @@ run_with_fake_docker() {
 }
 
 set +e
-scripts/dexe.sh >/dev/null 2>"$TMP_DIR/dexe.err"
+sh scripts/dexe.sh >/dev/null 2>"$TMP_DIR/dexe.err"
 rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "dexe missing container should exit 2"
 grep -F 'Usage: dexe' "$TMP_DIR/dexe.err" >/dev/null || fail "dexe usage missing"
 
 set +e
-scripts/pexe.sh target >/dev/null 2>"$TMP_DIR/pexe.err"
+sh scripts/pexe.sh target >/dev/null 2>"$TMP_DIR/pexe.err"
 rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "pexe missing php args should exit 2"
 grep -F 'Usage: pexe' "$TMP_DIR/pexe.err" >/dev/null || fail "pexe usage missing"
 
-run_with_fake_docker scripts/dexe.sh 'app-1' printf '%s %s' 'hello world' 'a;b'
+run_with_fake_docker sh scripts/dexe.sh 'app-1' printf '%s %s' 'hello world' 'a;b'
 cat > "$TMP_DIR/expected" <<'EOF'
 <exec>
 <app-1>
@@ -48,7 +48,7 @@ cat > "$TMP_DIR/expected" <<'EOF'
 EOF
 cmp -s "$TMP_DIR/expected" "$TMP_DIR/argv.log" || fail "dexe argv forwarding changed"
 
-run_with_fake_docker scripts/pexe.sh 'php_84' artisan queue:work '--queue=high priority'
+run_with_fake_docker sh scripts/pexe.sh 'php_84' artisan queue:work '--queue=high priority'
 cat > "$TMP_DIR/expected" <<'EOF'
 <exec>
 <php_84>
@@ -60,7 +60,7 @@ EOF
 cmp -s "$TMP_DIR/expected" "$TMP_DIR/argv.log" || fail "pexe argv forwarding changed"
 
 set +e
-FAKE_DOCKER_EXIT=37 run_with_fake_docker scripts/dexe.sh app false
+FAKE_DOCKER_EXIT=37 run_with_fake_docker sh scripts/dexe.sh app false
 rc=$?
 set -e
 [ "$rc" -eq 37 ] || fail "dexe must propagate docker exit status"
