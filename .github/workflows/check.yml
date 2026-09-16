@@ -1,0 +1,87 @@
+name: Check
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'plan/**'
+      - 'feature/**'
+      - 'fix/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: Static and contract checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Static checks
+        run: bash tests/static.sh
+
+      - name: Dependency contracts
+        run: bash tests/dependency-contract.sh
+
+      - name: Helper smoke tests
+        run: bash tests/helpers-smoke.sh
+
+      - name: Install actionlint
+        env:
+          GOBIN: ${{ runner.temp }}/bin
+        run: |
+          mkdir -p "$GOBIN"
+          go install github.com/rhysd/actionlint/cmd/actionlint@latest
+
+      - name: Lint workflows
+        run: "${{ runner.temp }}/bin/actionlint"
+
+  build:
+    name: Build current Runner image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          pull: true
+          push: false
+          tags: infocyph/runner:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify expected image commands
+        run: |
+          docker run --rm --entrypoint sh infocyph/runner:ci -lc '
+            command -v supervisord >/dev/null &&
+            command -v crond >/dev/null &&
+            command -v logrotate >/dev/null &&
+            command -v dexe >/dev/null &&
+            command -v pexe >/dev/null &&
+            command -v show-banner >/dev/null &&
+            command -v chromacat >/dev/null &&
+            command -v runner-healthcheck >/dev/null &&
+            chromacat --version
+          '
