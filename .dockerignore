@@ -6,6 +6,10 @@
 # Ignore documentation and metadata files
 LICENSE
 *.md
+docs/
+
+# Ignore repository tests; CI runs them from the host checkout.
+tests/
 
 # Ignore environment files
 .env
