@@ -12,6 +12,7 @@ README='README.md'
 
 assert_file "$WORKFLOW"
 assert_file "$README"
+assert_file tests/release-gate.sh
 
 assert_contains "$WORKFLOW" "cron: '0 0 * * 0'"
 # shellcheck disable=SC2016 # Intentional literal GitHub Actions expression.
@@ -25,7 +26,7 @@ assert_contains "$WORKFLOW" 'platforms: linux/amd64,linux/arm64'
 assert_contains "$WORKFLOW" 'provenance: mode=max'
 assert_contains "$WORKFLOW" 'sbom: true'
 assert_contains "$WORKFLOW" 'uses: actions/attest@v4'
-assert_contains "$WORKFLOW" 'bash tests/localdevstack-contract.sh'
+assert_contains "$WORKFLOW" 'bash tests/release-gate.sh'
 assert_contains "$WORKFLOW" 'Refusing to overwrite immutable release tag'
 
 assert_not_contains "$WORKFLOW" 'cadence_offset'
