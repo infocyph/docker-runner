@@ -61,6 +61,47 @@ docker exec runner runner-healthcheck
 docker exec runner supervisorctl -c /etc/supervisor/supervisord.conf status
 ```
 
+## Docker Compose examples
+
+A standalone-first Compose example is included at:
+
+```text
+examples/docker-compose.yml
+```
+
+Validate it without starting containers:
+
+```bash
+docker compose -f examples/docker-compose.yml config -q
+```
+
+Start it:
+
+```bash
+mkdir -p examples/supervisor examples/cron-jobs examples/logs
+docker compose -f examples/docker-compose.yml up -d
+```
+
+The default example does **not** mount the Docker socket. If `dexe` or `pexe` must control sibling containers, add the supplied opt-in override:
+
+```bash
+docker compose \
+  -f examples/docker-compose.yml \
+  -f examples/docker-compose.docker.yml \
+  up -d
+```
+
+The merged configuration can also be validated before use:
+
+```bash
+docker compose \
+  -f examples/docker-compose.yml \
+  -f examples/docker-compose.docker.yml \
+  config -q
+```
+
+Repository CI validates both Compose forms on every supported working branch/PR.
+
 ## Optional mounts
 
 A fuller standalone setup can mount only the features it needs:
@@ -251,7 +292,7 @@ These paths are retained for existing consumers even though current LocalDevStac
 
 ### Supervisor logs
 
-`/var/log/supervisor/*.log` is rotated daily by the bundled policy. Supervisor is then signaled to close and reopen its log descriptors so new writes continue to the active logfile.
+`/var/log/supervisor/*.log` is rotated daily by the bundled policy. Supervisor is then sent `SIGUSR2` so it closes and reopens its log descriptors and new writes continue to the active logfile.
 
 ## Docker exec helpers
 
@@ -299,7 +340,7 @@ Runner intentionally follows current upstream foundations:
 - `Scriptomatic/main` for the banner helper;
 - latest stable Toolset release for `chromacat`.
 
-These are deliberate moving dependencies. Compatibility is protected through repository CI, runtime smoke tests, arm64 validation, and a fresh weekly upstream canary rather than by freezing those inputs.
+These are deliberate moving dependencies. Compatibility is protected by repository CI/runtime smoke, arm64 validation, and the weekly fresh `latest` rebuild/publish gate rather than by freezing those inputs.
 
 Published builds expose provenance/SBOM information and workflow summaries record the resolved Alpine, Toolset/chromacat, and Scriptomatic state used for the build.
 
@@ -308,13 +349,13 @@ Published builds expose provenance/SBOM information and workflow summaries recor
 On a GitHub release:
 
 1. the exact release tag is checked out;
-2. a fresh amd64 candidate is built against current moving upstreams;
-3. standalone, Supervisor, Cronie, logrotate, Docker-helper, and LocalDevStack compatibility smoke tests run;
+2. fresh amd64 and arm64 candidates are built against current moving upstreams;
+3. the full amd64 release gate and arm64 startup gate run before registry login/push;
 4. the immutable version tag and `latest` are published to Docker Hub and GHCR;
 5. the multi-architecture image includes amd64 + arm64;
 6. SBOM/provenance and registry attestations are emitted.
 
-Once per week, the latest published Runner source release is rebuilt against current moving upstreams and **only `latest`** is refreshed. Historical version tags are not republished by the scheduled refresh.
+Once per week, the latest stable published Runner source release is rebuilt against current moving upstreams and **only `latest`** is refreshed. Historical version tags are not republished by the scheduled refresh.
 
 ## Troubleshooting
 
