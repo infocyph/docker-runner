@@ -2,7 +2,12 @@ name: Check
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches:
+      - main
+      - master
+      - 'plan/**'
+      - 'feature/**'
+      - 'fix/**'
   pull_request:
     branches: [ "main", "master", "develop", "development" ]
   workflow_dispatch:
@@ -39,6 +44,9 @@ jobs:
 
       - name: Release contracts
         run: bash tests/release-contract.sh
+
+      - name: Compose examples
+        run: bash tests/compose-contract.sh
 
       - name: Helper smoke tests
         run: bash tests/helpers-smoke.sh
