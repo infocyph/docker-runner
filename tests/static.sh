@@ -24,8 +24,10 @@ assert_file scripts/supervisord.conf
 assert_file loggables/daily
 assert_file loggables/dailyold
 assert_file loggables/supervisord
+assert_file examples/docker-compose.yml
+assert_file examples/docker-compose.docker.yml
 
-if grep -IRn $'\r' Dockerfile scripts loggables tests .github 2>/dev/null; then
+if grep -IRn $'\r' Dockerfile scripts loggables tests examples .github 2>/dev/null; then
     fail "CRLF detected in source/config files"
 fi
 
