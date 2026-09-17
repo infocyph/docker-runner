@@ -24,17 +24,17 @@ Implementation status:
 - Phase 2 — Dependency modernization: **implemented and passing**
 - Phase 3 — Runtime hardening: **implemented and passing**
 - Phase 4 — Full image/runtime smoke: **implemented and passing**
-- Phase 5 — Architecture, upstream canary and supply chain: **implemented and passing**
+- Phase 5 — Architecture and supply chain: **implemented and passing**
 - Phase 6 — Publishing modernization: **implemented and contract-validated**
 - Phase 7 — Documentation/integration/release closure: **implemented and passing**
 
-The final branch CI gate validates amd64 runtime behavior, live LocalDevStack compatibility, and arm64 startup. Actual Docker Hub/GHCR publication is intentionally performed only by the release/scheduled publish workflow rather than by branch CI.
+There is intentionally **no separate upstream-canary workflow**. The weekly Docker publish refresh is the single scheduled fresh-upstream path: it rebuilds the latest stable Runner release against current Alpine/Scriptomatic/Toolset, runs release gates, and updates only `latest`.
 
 ---
 
 # 1. Product boundary
 
-`docker-runner` remains a small infrastructure companion image. It supports two valid modes:
+`docker-runner` remains a small infrastructure companion image with two supported modes:
 
 1. **LocalDevStack-integrated** — scheduler configuration, service logs and optionally the Docker socket are mounted into Runner.
 2. **Standalone** — Runner starts by itself with Supervisor + Cronie + logrotate; all external mounts and Docker access are optional.
@@ -47,7 +47,7 @@ Runner owns only:
 - thin Docker exec helpers (`dexe`, `pexe`) when Docker access is supplied;
 - the existing interactive banner helper.
 
-Runner does not become a generic runtime image or a replacement for `docker-tools`.
+Runner must not become a generic application-runtime image or a second `docker-tools` control plane.
 
 ---
 
@@ -61,7 +61,7 @@ Keep exactly:
 FROM alpine:latest
 ```
 
-This is intentionally moving. Compatibility is protected by CI, weekly canary builds and weekly `latest` refreshes rather than by pinning Alpine.
+Alpine is intentionally moving. Compatibility is protected by normal CI plus the weekly fresh `latest` rebuild/publish gate rather than by source pinning.
 
 ## Scriptomatic
 
@@ -71,14 +71,14 @@ Consume:
 https://raw.githubusercontent.com/infocyph/Scriptomatic/main/bash/banner.sh
 ```
 
-Safeguards implemented:
+Safeguards:
 
 - HTTPS download;
-- fail-fast download;
+- fail-fast transfer;
 - non-empty payload check;
 - `bash -n` syntax validation;
 - dependency contract rejects `master` and version/SHA pins;
-- fresh-upstream canary catches future `main` incompatibility.
+- weekly publish refresh rebuilds against current `main` before updating `latest`.
 
 ## Toolset
 
@@ -91,13 +91,13 @@ bash /tmp/toolset-install.sh --prefix /usr/local/bin chromacat
 rm -f /tmp/toolset-install.sh
 ```
 
-The installer validates the selected release asset against Toolset release checksums. Runner does not install Toolset `--all`.
+Runner does not install Toolset `--all`.
 
 ## Traceability model
 
-Because Alpine, Scriptomatic and Toolset intentionally move, Runner targets **immutable publication + auditable build inputs**, not byte-identical future rebuilds.
+Because Alpine, Scriptomatic and Toolset intentionally move, the target is **immutable version publication + auditable resolved inputs**, not byte-identical future rebuilds.
 
-Publishing records or exposes:
+Publishing records/exposes:
 
 - Runner source tag/revision;
 - image digest;
@@ -117,7 +117,7 @@ Preserved:
 - `docker.io/infocyph/runner`;
 - `ghcr.io/infocyph/runner`;
 - `latest` as LocalDevStack's moving integration channel;
-- immutable release tags for pinned consumers;
+- immutable version tags for pinned consumers;
 - Supervisor PID 1;
 - `/etc/supervisor/conf.d/*.conf`;
 - `/etc/cron.d`;
@@ -125,7 +125,7 @@ Preserved:
 - `/global/movelog` and `/global/oldlogs`;
 - `/var/log/supervisor`;
 - `dexe` and `pexe`;
-- argument and exit-code preservation;
+- exact argument forwarding and exit-code propagation;
 - TTY auto-detection;
 - optional Docker socket;
 - root execution for this infrastructure role.
@@ -140,7 +140,7 @@ docker run -d --name runner infocyph/runner:latest
 
 # 4. Validation and CI — implemented
 
-Repository-native tests now include:
+Repository-native tests include:
 
 ```text
 tests/
@@ -149,6 +149,7 @@ tests/
 ├── dependency-contract.sh
 ├── runtime-contract.sh
 ├── release-contract.sh
+├── compose-contract.sh
 ├── helpers-smoke.sh
 ├── standalone-smoke.sh
 ├── supervisor-smoke.sh
@@ -159,21 +160,24 @@ tests/
 └── release-gate.sh
 ```
 
-The permanent `Check` workflow uses current action majors and enforces:
+Permanent `Check` workflow coverage:
 
 - shell syntax;
-- LF-only source/config/workflow files;
+- LF-only source/config/workflow/example files;
 - ShellCheck;
 - dependency contracts;
 - runtime contracts;
 - publishing/release contracts;
+- Docker Compose example validation;
 - deterministic helper tests;
 - actionlint;
 - real amd64 image build;
 - final shared release gate;
 - arm64 Buildx/QEMU build and startup smoke.
 
-The same `tests/release-gate.sh` is used by normal CI and the publishing workflow so the release path cannot silently skip behavior proven in PR/branch CI.
+`plan/**`, `feature/**`, and `fix/**` pushes are validated in addition to the normal main/PR surfaces.
+
+The same `tests/release-gate.sh` is used by normal CI and publishing so release behavior cannot silently bypass the runtime behavior proven in branch/PR CI.
 
 ---
 
@@ -188,7 +192,7 @@ cron
 logrotate
 ```
 
-Mounted application programs do not incorrectly make Runner unhealthy when those programs are intentionally stopped or fail.
+Mounted application programs are deliberately excluded from container health.
 
 ## Supervisor log ownership
 
@@ -201,7 +205,7 @@ logfile_backups=0
 
 External logrotate is the single rotation owner.
 
-When Supervisor logs rotate, logrotate reads `/run/supervisord.pid` and sends **SIGUSR2** to Supervisor so its log descriptors are closed and reopened. The old/non-portable `supervisorctl reopenlogs` assumption is not used.
+When Supervisor logs rotate, logrotate reads `/run/supervisord.pid` and sends **SIGUSR2** so Supervisor closes and reopens log descriptors.
 
 ## Cronie
 
@@ -211,26 +215,24 @@ Runner retains:
 /usr/sbin/crond -f -P -p
 ```
 
-Testing proved the permissive `-p` behavior is useful for host bind-mounted cron files with non-root host ownership/modes. `-P` retains the daemon PATH.
+Testing proved permissive `-p` behavior is useful for cross-platform host bind-mounted cron files. `-P` retains the daemon PATH.
 
-Container `TZ` does not automatically become every Cronie job's `TZ`; jobs that depend on a timezone should set `TZ=...` explicitly in the cron table.
+Container `TZ` is not assumed to become every job's timezone; timezone-sensitive jobs should define `TZ=...` in the cron table.
 
 ## Logrotate worker
 
 Implemented behavior:
 
-- positive-integer validation for `LOGROTATE_INTERVAL`;
+- validates `LOGROTATE_INTERVAL` as a positive integer;
 - invalid normal interval falls back to `3600`;
-- `LOGROTATE_FAILURE_INTERVAL`, default `60`;
-- state-path validation;
-- fallback mode attempts every fragment even if one fails;
-- rotation errors are reported without terminating into Supervisor restart storms;
-- bounded retry delay after failed passes;
-- normal interval restored after success;
-- TERM/INT cleanly interrupts sleep and exits;
-- initialization failures that make operation impossible remain fatal.
-
-Real tests cover malformed fragments, later-fragment continuation, state creation, service-log rotation and shutdown.
+- `LOGROTATE_FAILURE_INTERVAL` defaults to `60`;
+- validates state path/directory;
+- fallback mode attempts later fragments after one failure;
+- rotation errors do not terminate into Supervisor restart storms;
+- failures retry on a bounded interval;
+- success returns to the normal interval;
+- TERM/INT interrupts sleep and exits cleanly;
+- impossible initialization failures remain fatal.
 
 ---
 
@@ -243,30 +245,28 @@ The amd64 release gate proves:
 - healthy `cron` + `logrotate`;
 - clean shutdown;
 - non-core Supervisor failure does not poison core health;
-- core program failure does make health fail;
+- core failure does make health fail;
 - Cronie system-style jobs execute;
 - permissive host-mount Cronie behavior works;
-- custom PATH behavior works;
-- explicit cron-table timezone behavior works;
+- custom PATH and explicit cron-table timezone behavior work;
 - bundled logrotate configs parse;
-- `/global/log` rotates correctly;
+- `/global/log` rotation works;
 - logrotate state is created;
 - Supervisor logs rotate and reopen through SIGUSR2;
-- invalid logrotate fragments do not restart-loop the worker;
-- fallback continues past a failed fragment;
-- bounded failure retries work;
+- invalid fragments do not restart-loop the worker;
+- fallback continues after a failed fragment;
+- bounded failure retry works;
 - `dexe` real non-TTY and PTY paths work;
 - `pexe` real argument forwarding works;
 - Docker target exit status propagates;
 - current LocalDevStack mount shape works;
-- LocalDevStack-style timezone, Docker socket and sibling-container execution work;
-- LocalDevStack-style Runner survives restart without new privileges/capabilities.
+- LocalDevStack-style timezone, Docker socket, sibling execution and restart recovery work.
 
-Package review conclusion: **no package removals for 0.5.0**. Compatibility and predictable behavior outweigh marginal image-size savings. `gawk` may be reconsidered only in a dedicated future compatibility pass.
+Package review conclusion: **no package removals for 0.5.0**. `gawk` may be reconsidered only in a dedicated future compatibility pass.
 
 ---
 
-# 7. Architecture and moving-upstream canary — implemented
+# 7. Architecture and supply chain — implemented
 
 Supported publish targets:
 
@@ -275,23 +275,26 @@ linux/amd64
 linux/arm64
 ```
 
-arm64 is validated with QEMU using both command and real Runner startup/health smoke.
+arm64 is validated with QEMU using command and real Runner startup/health smoke in normal CI.
 
-`.github/workflows/upstream-canary.yml` runs weekly and deliberately performs fresh non-publishing builds against current:
+The publish workflow additionally fresh-builds both amd64 and arm64 release candidates against current moving upstreams before registry login/push. The final multi-architecture publication reuses those tested caches.
 
-- `alpine:latest`;
-- Scriptomatic `main`;
-- Toolset latest stable.
+Supply-chain output includes:
 
-The canary uses fresh/no-cache behavior, records resolved dependency information, runs amd64 core runtime smoke and validates arm64 startup. It never publishes images.
+- BuildKit `provenance: mode=max`;
+- SBOM;
+- OCI source/revision/version metadata;
+- manifest digest visibility;
+- Docker Hub + GHCR attestations through `actions/attest@v4`;
+- resolved upstream information in workflow summaries.
 
-Dependabot is configured for weekly GitHub Actions updates only; it does not replace the intentional moving container/tool dependencies.
+Dependabot is configured for weekly GitHub Actions updates only.
+
+No dedicated upstream-canary workflow is required because the scheduled weekly publish refresh already provides the fresh-upstream build/test path before updating `latest`.
 
 ---
 
 # 8. Docker publishing — implemented
-
-The publish workflow is aligned with the established `docker-llm-sm` release model while retaining Runner's stronger runtime and supply-chain gates.
 
 Triggers:
 
@@ -310,28 +313,28 @@ Scheduled publication is intentionally **once per week**.
 
 On `release: published`:
 
-1. use `github.event.release.tag_name` as the exact Runner source release;
+1. use `github.event.release.tag_name` as the exact source release;
 2. checkout that exact tag;
-3. fresh-build amd64 candidate against current moving dependencies;
-4. run the complete shared release gate;
-5. ensure the version tag does not already exist in Docker Hub or GHCR;
+3. fresh-build amd64 and arm64 candidates against current moving dependencies;
+4. run the complete amd64 release gate and arm64 startup gate;
+5. ensure version tags do not already exist in Docker Hub or GHCR;
 6. publish `<release-tag>` and `latest`;
 7. publish a multi-architecture amd64/arm64 manifest;
 8. emit SBOM/provenance and registry attestations;
-9. summarize the resulting digest and resolved build inputs.
+9. summarize digest and resolved build inputs.
 
 ## Weekly refresh
 
 On the weekly schedule:
 
-1. resolve the latest published Runner release;
+1. resolve GitHub's latest **stable** Runner release;
 2. checkout that immutable Runner source;
-3. fresh-build against current Alpine/Scriptomatic/Toolset;
-4. run the complete release gate;
+3. fresh-build amd64 and arm64 against current Alpine/Scriptomatic/Toolset;
+4. run release gates;
 5. publish **only `latest`**;
 6. never overwrite/reissue the historical version tag.
 
-This replaces the older incorrect/overcomplicated biweekly scheduling logic with the explicitly requested weekly cadence.
+This scheduled refresh replaces the need for a separate upstream canary.
 
 ## Current action baselines
 
@@ -343,11 +346,47 @@ This replaces the older incorrect/overcomplicated biweekly scheduling logic with
 - `docker/build-push-action@v7`;
 - `actions/attest@v4`.
 
-Release contracts lock these important semantics so accidental workflow regression is caught by normal CI.
+---
+
+# 9. Docker Compose examples — implemented and validated
+
+Repository examples:
+
+```text
+examples/docker-compose.yml
+examples/docker-compose.docker.yml
+```
+
+`docker-compose.yml` is standalone-first and does not mount `/var/run/docker.sock`.
+
+It demonstrates:
+
+- `infocyph/runner:latest`;
+- timezone + logrotate interval environment variables;
+- read-only Supervisor config mount;
+- read-only Cronie config mount;
+- `/global/log` bind mount;
+- persistent Supervisor log volume;
+- persistent logrotate state volume.
+
+`docker-compose.docker.yml` is an explicit opt-in override that adds only:
+
+```text
+/var/run/docker.sock:/var/run/docker.sock
+```
+
+`tests/compose-contract.sh` enforces the safety contract and runs:
+
+```bash
+docker compose -f examples/docker-compose.yml config -q
+docker compose -f examples/docker-compose.yml -f examples/docker-compose.docker.yml config -q
+```
+
+Neither example enables privileged mode.
 
 ---
 
-# 9. LocalDevStack compatibility — implemented
+# 10. LocalDevStack compatibility — implemented
 
 LocalDevStack remains the primary ecosystem compatibility target and continues to consume:
 
@@ -355,7 +394,7 @@ LocalDevStack remains the primary ecosystem compatibility target and continues t
 image: infocyph/runner:latest
 ```
 
-The release gate reads current LocalDevStack `main` and locks its Runner integration surface, including:
+The release gate reads current LocalDevStack `main` and validates its Runner integration surface, including:
 
 ```text
 configuration/scheduler/supervisor -> /etc/supervisor/conf.d:ro
@@ -365,34 +404,25 @@ logs/<service>                      -> /global/log/<service>
 /var/run/docker.sock               -> /var/run/docker.sock
 ```
 
-The test reproduces this shape with representative Supervisor/cron workloads, all current service-log mounts, timezone propagation, Docker socket access, sibling execution, health and restart recovery.
-
 No LocalDevStack-specific network, hostname, container name or host path is baked into Runner.
 
 ## Logrotate state decision
 
-LocalDevStack currently does not separately persist `/var/lib/logrotate` across container recreation.
-
-For 0.5.0 this remains unchanged intentionally:
-
-- Runner documents optional state persistence;
-- standalone users may mount `/var/lib/logrotate`;
-- LocalDevStack may add a named volume/bind later if preserving rotation state across recreation becomes operationally useful;
-- Runner does not force that orchestration decision.
+LocalDevStack does not currently persist `/var/lib/logrotate` across container recreation. For 0.5.0 this remains an orchestration choice rather than a Runner requirement.
 
 ---
 
-# 10. Documentation and repository support — implemented
+# 11. Documentation and repository support — implemented
 
-README now reflects tested behavior rather than legacy assumptions. It documents:
+README documents:
 
 - standalone-first usage;
+- validated Compose usage;
+- optional Docker-socket override;
 - LocalDevStack role;
 - core-only health semantics;
-- real Cronie flags;
-- cron timezone behavior;
-- logrotate normal/failure intervals;
-- logrotate state persistence;
+- actual Cronie flags and timezone behavior;
+- logrotate normal/failure intervals and state persistence;
 - explicit supported log glob depths;
 - Supervisor SIGUSR2 reopen behavior;
 - legacy move-to-oldlogs compatibility;
@@ -404,13 +434,13 @@ README now reflects tested behavior rather than legacy assumptions. It documents
 Repository support decisions:
 
 - global LF policy remains `* text eol=lf`;
-- `.dockerignore` excludes docs/tests from runtime build context;
-- tests remain available to CI from the repository checkout;
+- `.dockerignore` excludes docs/tests/examples from runtime build context;
+- tests/examples remain available to CI from repository checkout;
 - no unnecessary generated artifacts require `.gitignore` expansion.
 
 ---
 
-# 11. Security/privilege boundary
+# 12. Security/privilege boundary
 
 Keep:
 
@@ -428,11 +458,11 @@ Do not bake in:
 - Docker daemon configuration;
 - application runtimes.
 
-Mounting `/var/run/docker.sock` is documented as a powerful host-control boundary and remains optional.
+Mounting `/var/run/docker.sock` remains an explicit, documented host-control boundary.
 
 ---
 
-# 12. Deferred ideas / explicit non-goals for 0.5.0
+# 13. Deferred ideas / explicit non-goals for 0.5.0
 
 Potential later additions only if demonstrated useful:
 
@@ -449,6 +479,7 @@ Not part of 0.5.0:
 - pinning Scriptomatic away from `main`;
 - pinning Toolset away from latest stable;
 - Toolset `--all`;
+- a dedicated upstream-canary workflow;
 - config filesystem watchers;
 - replacing Supervisor or Cronie;
 - application runtimes/databases/web servers;
@@ -460,9 +491,9 @@ Keep Runner small and boring.
 
 ---
 
-# 13. Release decision
+# 14. Release decision
 
-The hardening work is additive and preserves the established public integration surfaces. It materially expands tested behavior, architecture support, workflow quality and observability without requiring a breaking public API/config migration.
+The hardening work is additive and preserves established integration surfaces while materially expanding tested behavior, architecture support, workflow quality and observability.
 
 Target release: **0.5.0**.
 
@@ -471,14 +502,14 @@ Before creating the release:
 1. merge the hardened branch to `main` through the normal repository process;
 2. ensure final `main` Check workflow is green;
 3. create/publish GitHub release `0.5.0`;
-4. allow the release event to execute the fresh release gate and publish Docker Hub/GHCR images;
+4. allow the release event to run fresh amd64/arm64 gates and publish Docker Hub/GHCR images;
 5. verify published `0.5.0` + `latest` manifests and attestations.
 
 Do not manually overwrite an existing versioned image tag.
 
 ---
 
-# 14. Final acceptance criteria
+# 15. Final acceptance criteria
 
 Hardening is complete when all of the following remain true:
 
@@ -486,7 +517,7 @@ Hardening is complete when all of the following remain true:
 2. Scriptomatic comes from `main` and is syntax-checked.
 3. Toolset comes from latest stable and installs only `chromacat` to `/usr/local/bin`.
 4. Static syntax, ShellCheck and actionlint pass.
-5. Dependency, runtime and release contracts pass.
+5. Dependency, runtime, release and Compose contracts pass.
 6. Supervisor remains PID 1.
 7. Health covers only `cron` + `logrotate`.
 8. Mounted program failure does not falsely mark core Runner unhealthy.
@@ -506,16 +537,19 @@ Hardening is complete when all of the following remain true:
 22. Legacy move-to-oldlogs paths remain available.
 23. amd64 full release gate passes.
 24. arm64 build/startup gate passes.
-25. Fresh weekly upstream canary protects the moving dependency policy.
-26. Release-event publication uses the exact event tag.
-27. Weekly refresh rebuilds the latest Runner release against current upstreams and updates only `latest`.
-28. Historical version tags are guarded against overwrite.
-29. Docker Hub + GHCR share the same build definition.
-30. Multi-architecture publication targets amd64 + arm64.
-31. SBOM, provenance and registry attestations are enabled.
-32. README matches tested behavior.
-33. Global LF policy remains intact.
-34. Runtime build context excludes tests/docs.
-35. Runner remains narrowly scoped.
+25. No dedicated upstream-canary workflow exists.
+26. Weekly publish refresh is the scheduled fresh-upstream validation/publish path.
+27. Release-event publication uses the exact event tag.
+28. Weekly refresh resolves the latest stable release and updates only `latest`.
+29. Historical version tags are guarded against overwrite.
+30. Docker Hub + GHCR share the same build definition.
+31. Multi-architecture publication targets amd64 + arm64.
+32. SBOM, provenance and registry attestations are enabled.
+33. Base and Docker-socket Compose examples validate with `docker compose config -q`.
+34. Base Compose example does not mount Docker socket or enable privileged mode.
+35. README matches tested behavior.
+36. Global LF policy remains intact.
+37. Runtime build context excludes tests/docs/examples.
+38. Runner remains narrowly scoped.
 
-At the end of this plan, branch CI has demonstrated the full non-publishing acceptance surface. Registry publication itself is intentionally deferred to the `0.5.0` release event.
+At the end of this plan, branch CI demonstrates the full non-publishing acceptance surface. Registry publication itself remains deferred to the `0.5.0` release event.
