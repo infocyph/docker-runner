@@ -14,6 +14,8 @@ assert_file "$WORKFLOW"
 assert_file "$README"
 assert_file tests/release-gate.sh
 
+[[ ! -e .github/workflows/upstream-canary.yml ]] || fail 'dedicated upstream canary workflow must remain absent'
+
 assert_contains "$WORKFLOW" "cron: '0 0 * * 0'"
 # shellcheck disable=SC2016 # Intentional literal GitHub Actions expression.
 assert_contains "$WORKFLOW" 'EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}'
