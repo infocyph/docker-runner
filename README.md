@@ -1,350 +1,423 @@
-# 🚀 Docker Runner (Supervisor Service)
+# 🚀 Docker Runner
 
 [![Docker Publish](https://github.com/infocyph/docker-runner/actions/workflows/docker.publish.yml/badge.svg)](https://github.com/infocyph/docker-runner/actions/workflows/docker.publish.yml)
+[![Check](https://github.com/infocyph/docker-runner/actions/workflows/check.yml/badge.svg)](https://github.com/infocyph/docker-runner/actions/workflows/check.yml)
 ![Docker Pulls](https://img.shields.io/docker/pulls/infocyph/runner)
 ![Docker Image Size](https://img.shields.io/docker/image-size/infocyph/runner)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Base: Alpine](https://img.shields.io/badge/Base-Alpine-brightgreen.svg)](https://alpinelinux.org)
 
-A lightweight, Alpine-based Docker image designed to run and manage long-running processes using **Supervisor**, with built-in support for:
+A small Alpine-based infrastructure image for **Supervisor + Cronie + logrotate**, with thin Docker `exec` helpers for environments that choose to provide Docker access.
 
-- `docker exec` wrappers (`pexe` & `dexe`) with TTY auto-detection
-- Scheduled log rotation via `logrotate` (worker loop + persisted state)
-- Cron support via `cronie` (logs to Docker stdout)
-- Clean log management for scalable environments
-- Built-in container **HEALTHCHECK** (Supervisor responsiveness)
+Runner is primarily used by [LocalDevStack](https://github.com/infocyph/LocalDevStack), but standalone operation is a first-class contract.
 
----
+## What Runner owns
 
-## 📦 Available on Registries
+Runner deliberately stays narrow:
 
-| Registry         | Image Name                  |
-|------------------|-----------------------------|
-| Docker Hub       | `docker.io/infocyph/runner` |
-| GitHub Container | `ghcr.io/infocyph/runner`   |
+- Supervisor as PID 1;
+- Cronie for scheduled jobs;
+- a resilient logrotate worker;
+- `dexe` and `pexe` Docker exec wrappers;
+- the existing interactive banner helper.
 
----
+It does **not** bundle PHP, Node.js, databases, web servers, queue brokers, or a Docker daemon.
 
-## ✨ What it runs by default
+## Images
 
-The container starts **Supervisor** as PID 1 which manages:
+| Registry | Image |
+| --- | --- |
+| Docker Hub | `docker.io/infocyph/runner` |
+| GHCR | `ghcr.io/infocyph/runner` |
 
-- `crond` (foreground, logs to Docker stdout)
-- a `logrotate` worker loop that runs periodically
+Published images support:
 
-You can mount additional Supervisor programs via `/etc/supervisor/conf.d`.
+- `linux/amd64`;
+- `linux/arm64`.
 
----
+`latest` is the moving integration channel and is refreshed from the latest published Runner release once per week against current moving upstream dependencies. Version tags are intended to remain immutable.
 
-## 🩺 Healthcheck
+## Standalone usage
 
-The image includes a healthcheck that verifies Supervisor is responsive:
+No Docker socket or external mount is required to start Runner:
 
-- Interval: 30s
-- Timeout: 3s
-- Start period: 10s
-- Retries: 3
+```bash
+docker run -d --name runner infocyph/runner:latest
+```
 
-If Supervisor becomes unresponsive, the container will be reported as **unhealthy**.
+The container becomes healthy when Runner's two core supervised services are running:
 
----
+```text
+cron
+logrotate
+```
 
-## 💪 Executables
+Additional user-mounted Supervisor programs are intentionally **not** part of the container health decision.
 
-### `dexe`
+Useful checks:
 
-Run any command inside a container (TTY auto-detected):
+```bash
+docker exec runner runner-healthcheck
+docker exec runner supervisorctl -c /etc/supervisor/supervisord.conf status
+```
 
-```sh
-dexe <container_name> <command> [...args]
-````
+## Docker Compose examples
+
+A standalone-first Compose example is included at:
+
+```text
+examples/docker-compose.yml
+```
+
+Validate it without starting containers:
+
+```bash
+docker compose -f examples/docker-compose.yml config -q
+```
+
+Start it:
+
+```bash
+mkdir -p examples/supervisor examples/cron-jobs examples/logs
+docker compose -f examples/docker-compose.yml up -d
+```
+
+The default example does **not** mount the Docker socket. If `dexe` or `pexe` must control sibling containers, add the supplied opt-in override:
+
+```bash
+docker compose \
+  -f examples/docker-compose.yml \
+  -f examples/docker-compose.docker.yml \
+  up -d
+```
+
+The merged configuration can also be validated before use:
+
+```bash
+docker compose \
+  -f examples/docker-compose.yml \
+  -f examples/docker-compose.docker.yml \
+  config -q
+```
+
+Repository CI validates both Compose forms on every supported working branch/PR.
+
+## Optional mounts
+
+A fuller standalone setup can mount only the features it needs:
+
+```bash
+docker run -d \
+  --name runner \
+  -e TZ=Asia/Dhaka \
+  -v ./supervisor:/etc/supervisor/conf.d:ro \
+  -v ./cron-jobs:/etc/cron.d:ro \
+  -v ./logs/runner:/var/log/supervisor \
+  -v ./logs:/global/log \
+  -v ./logrotate-state:/var/lib/logrotate \
+  infocyph/runner:latest
+```
+
+Mount the Docker socket only when `dexe` or `pexe` must control sibling containers:
+
+```bash
+-v /var/run/docker.sock:/var/run/docker.sock
+```
+
+> Mounting the Docker socket grants Runner powerful control over the Docker host. It is optional and should not be added merely for health, cron, Supervisor, or log rotation.
+
+## LocalDevStack integration
+
+LocalDevStack currently uses Runner as its background-process companion and mounts approximately:
+
+```text
+configuration/scheduler/supervisor -> /etc/supervisor/conf.d:ro
+configuration/scheduler/cron-jobs  -> /etc/cron.d:ro
+logs/runner                         -> /var/log/supervisor
+logs/<service>                      -> /global/log/<service>
+/var/run/docker.sock               -> /var/run/docker.sock
+```
+
+Runner does not bake LocalDevStack-specific networks, hostnames, container names, or host paths into the image.
+
+## Supervisor
+
+The default command is:
+
+```text
+supervisord -c /etc/supervisor/supervisord.conf
+```
+
+Supervisor remains PID 1 and starts:
+
+- `cron`;
+- `logrotate`.
+
+Additional programs can be mounted read-only into `/etc/supervisor/conf.d`.
 
 Example:
 
-```sh
-dexe my-app echo "Hello from inside"
+```ini
+[program:worker]
+command=/bin/sh -c 'while :; do echo tick; sleep 60; done'
+autostart=true
+autorestart=true
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
 ```
 
-### `pexe`
+Supervisor's internal size-based logfile rotation is disabled. `/var/log/supervisor/*.log` is owned by the external logrotate policy, which signals Supervisor to reopen its log files after rotation.
 
-Run PHP inside a container (TTY auto-detected):
+## Healthcheck
 
-```sh
-pexe <container_name> <php_args...>
+The image healthcheck calls:
+
+```text
+runner-healthcheck
 ```
 
-Example:
+It validates Supervisor connectivity and only the Runner-owned core programs:
 
-```sh
-pexe my-php-app artisan migrate
+```text
+cron
+logrotate
 ```
 
-> **Note:** `pexe` is a thin wrapper over `docker exec ... php ...`
+This means an intentionally stopped or failed application program mounted through `/etc/supervisor/conf.d` does not falsely mark the Runner container unhealthy.
 
----
+Default Docker health settings:
 
-## 🔄 Log Rotation
+- interval: `30s`;
+- timeout: `3s`;
+- start period: `10s`;
+- retries: `3`.
 
-### Environment
+## Cronie
 
-* `LOGROTATE_INTERVAL` (seconds) — default: `3600`
-* `LOGROTATE_STATE_FILE` — default: `/var/lib/logrotate/status`
-* `TZ` — optional timezone for consistent scheduling/log timestamps
+Runner uses Cronie, not BusyBox cron. The supervised daemon command is:
 
-Example:
-
-```bash
--e TZ=Asia/Dhaka \
--e LOGROTATE_INTERVAL=3600
+```text
+/usr/sbin/crond -f -P -p
 ```
 
-### How rotation works
+`-P` preserves the daemon's inherited `PATH`; `-p` permits cron files that would otherwise fail Cronie's strict ownership/mode rules, which is important for cross-platform bind-mounted LocalDevStack scheduler files.
 
-* Logrotate configs are loaded from: `/etc/logrotate.d/`
-* The worker prefers `/etc/logrotate.conf` if present; otherwise it rotates each file in `/etc/logrotate.d/*`
-* Log files are rotated **daily** by default (per configs)
-* Rotation status is tracked in `LOGROTATE_STATE_FILE` to avoid repeated rotations across restarts
-
-### Paths & behaviors
-
-#### 1) Standard logs: `/global/log`
-
-Mount any directory into `/global/log/*` and any `*.log` inside (including subdirs) will rotate daily.
-
-```bash
--v $(pwd)/logs:/global/log/my-app
-```
-
-#### 2) Move-to-oldlogs: `/global/movelog` ➜ `/global/oldlogs`
-
-Mount logs that you want rotated daily **and moved** into `/global/oldlogs`.
-
-```bash
--v $(pwd)/movelogs:/global/movelog/my-app
--v $(pwd)/oldlogs:/global/oldlogs
-```
-
-#### 3) Supervisor logs: `/var/log/supervisor`
-
-Supervisor’s own logs (and any program logs you write there) rotate daily.
-
-```bash
--v $(pwd)/logs/runner:/var/log/supervisor
-```
-
-### Docker log messages on rotation
-
-Your logrotate configs emit a post-rotate line into Docker logs (stdout of PID 1), e.g.:
-
-* `[logrotate] rotated /global/log (daily) at ...`
-* `[logrotate] rotated /global/movelog -> /global/oldlogs (daily) at ...`
-* `[logrotate] rotated /var/log/supervisor (daily) at ...`
-
-This is done by writing to `/proc/1/fd/1` to reliably land in `docker logs`.
-
----
-
-## 🕒 Cron
-
-Cron runs in the foreground with logging enabled:
-
-* `crond -f -l 2 -L /dev/stdout`
-
-To add cron jobs, mount `/etc/cron.d`:
+Mount jobs read-only:
 
 ```bash
 -v ./cron-jobs:/etc/cron.d:ro
 ```
 
-Example file: `my-cron`:
+A system-style file includes the user field:
 
 ```cron
-* * * * * root echo "Cron ran at $(date)" >> /global/log/my-cron.log 2>&1
+* * * * * root printf 'cron ran\n' >> /global/log/cron.log 2>&1
 ```
 
----
+Keep cron files LF-only and end them with a final newline.
 
-## 🌐 Usage
+### Timezones in cron jobs
 
-### Single command running container
+Setting container `TZ` configures the Runner environment, but Cronie builds a controlled environment for jobs. If a job itself requires a specific timezone, define it explicitly in the cron file:
+
+```cron
+TZ=Asia/Dhaka
+* * * * * root date >> /global/log/time.log 2>&1
+```
+
+## Log rotation
+
+The logrotate worker runs continuously under Supervisor.
+
+### Environment variables
+
+| Variable | Default | Meaning |
+| --- | ---: | --- |
+| `LOGROTATE_INTERVAL` | `3600` | Seconds between successful rotation passes |
+| `LOGROTATE_FAILURE_INTERVAL` | `60` | Seconds before retry after a failed pass |
+| `LOGROTATE_STATE_FILE` | `/var/lib/logrotate/status` | Rotation state path |
+| `TZ` | unset | Container timezone |
+
+Intervals must be positive integers. Invalid values fall back to their defaults instead of creating a tight loop.
+
+A malformed logrotate fragment is reported but does not cause the worker to crash into a Supervisor restart storm. In fallback mode, remaining fragments are still attempted before the worker waits for the bounded failure retry interval.
+
+### State persistence
+
+`/var/lib/logrotate/status` persists while the same container exists. To preserve state across container replacement/recreation, mount `/var/lib/logrotate` to persistent storage:
 
 ```bash
-docker run -d \
-  --name runner \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v ./supervisor:/etc/supervisor/conf.d:ro \
-  -v ./cron-jobs:/etc/cron.d:ro \
-  -v ./logs/runner:/var/log/supervisor \
-  -v $(pwd)/logs:/global/log \
-  -v $(pwd)/movelogs:/global/movelog \
-  -v $(pwd)/oldlogs:/global/oldlogs \
-  infocyph/runner
+-v runner-logrotate-state:/var/lib/logrotate
 ```
 
-### Add Supervisor processes
+### `/global/log`
 
-Mount `/etc/supervisor/conf.d` to add Supervisor programs.
+The bundled policy matches these explicit depths:
 
-Example: `my-task.conf`
-
-```ini
-[program:my-task]
-command=/bin/sh -c 'echo Hello World && sleep 60'
-autostart=true
-autorestart=true
-stderr_logfile=/var/log/supervisor/my-task.err.log
-stdout_logfile=/var/log/supervisor/my-task.out.log
-
-[program:scheduler]
-command=pexe MY_PHP_CONTAINER artisan schedule:run
-autostart=true
-autorestart=true
-stderr_logfile=/var/log/supervisor/scheduler.err.log
-stdout_logfile=/var/log/supervisor/scheduler.out.log
+```text
+/global/log/*.log
+/global/log/*/*.log
+/global/log/*/*/*.log
 ```
 
-> Tip: If you want scheduler to run periodically, prefer cron calling `pexe ... schedule:run`.
+So files can be at the root, one directory deep, or two directories deep beneath `/global/log`; the config does not promise unlimited `**` recursion.
 
----
+Current policy includes:
 
-## 🧰 Troubleshooting
+- daily rotation;
+- `rotate 7`;
+- `maxage 30`;
+- `missingok`;
+- `notifempty`;
+- `copytruncate`;
+- compression with delayed compression;
+- date suffixes.
 
-### Check container health
+`copytruncate` is intentional because Runner cannot signal arbitrary sibling applications to reopen their own logs.
+
+### Legacy move-to-oldlogs paths
+
+For compatibility, Runner also keeps:
+
+```text
+/global/movelog
+/global/oldlogs
+```
+
+The same explicit depth model is used for `/global/movelog`; rotated files are moved into `/global/oldlogs`.
+
+These paths are retained for existing consumers even though current LocalDevStack does not rely on them.
+
+### Supervisor logs
+
+`/var/log/supervisor/*.log` is rotated daily by the bundled policy. Supervisor is then sent `SIGUSR2` so it closes and reopens its log descriptors and new writes continue to the active logfile.
+
+## Docker exec helpers
+
+### `dexe`
+
+Execute any command in another container:
 
 ```bash
-docker ps --format "table {{.Names}}\t{{.Status}}"
-docker inspect --format '{{json .State.Health}}' runner | jq .
+dexe <container> <command> [...args]
 ```
 
-If the container is `unhealthy`, it means `supervisorctl status` failed (Supervisor not responding).
-
-### Check Supervisor status inside container
+Example:
 
 ```bash
-docker exec -it runner supervisorctl -c /etc/supervisor/supervisord.conf status
+dexe my-app sh -c 'printf "hello\n"'
 ```
 
-### Where to look for logs
+### `pexe`
 
-* Docker logs (recommended):
+Execute PHP in another container:
 
-  ```bash
-  docker logs -f runner
-  ```
+```bash
+pexe <container> <php-args...>
+```
 
-  You should see cron logs and logrotate worker logs here.
-* Supervisor log file (if you mounted it):
+Example:
 
-    * `/var/log/supervisor/supervisord.log`
+```bash
+pexe my-php-app artisan migrate
+```
 
-### Cron jobs not running?
+Both wrappers:
+
+- forward arguments without `eval` or shell reconstruction;
+- preserve the target Docker command's exit status;
+- add `-it` automatically only when stdin and stdout are terminals.
+
+They require access to a Docker endpoint. The default LocalDevStack integration supplies `/var/run/docker.sock`; standalone Runner does not.
+
+## Moving dependency policy
+
+Runner intentionally follows current upstream foundations:
+
+- `alpine:latest`;
+- `Scriptomatic/main` for the banner helper;
+- latest stable Toolset release for `chromacat`.
+
+These are deliberate moving dependencies. Compatibility is protected by repository CI/runtime smoke, arm64 validation, and the weekly fresh `latest` rebuild/publish gate rather than by freezing those inputs.
+
+Published builds expose provenance/SBOM information and workflow summaries record the resolved Alpine, Toolset/chromacat, and Scriptomatic state used for the build.
+
+## Release behavior
+
+On a GitHub release:
+
+1. the exact release tag is checked out;
+2. fresh amd64 and arm64 candidates are built against current moving upstreams;
+3. the full amd64 release gate and arm64 startup gate run before registry login/push;
+4. the immutable version tag and `latest` are published to Docker Hub and GHCR;
+5. the multi-architecture image includes amd64 + arm64;
+6. SBOM/provenance and registry attestations are emitted.
+
+Once per week, the latest stable published Runner source release is rebuilt against current moving upstreams and **only `latest`** is refreshed. Historical version tags are not republished by the scheduled refresh.
+
+## Troubleshooting
+
+### Container is unhealthy
+
+Check the two core services:
+
+```bash
+docker exec runner runner-healthcheck
+docker exec runner supervisorctl -c /etc/supervisor/supervisord.conf status cron logrotate
+```
+
+A non-core mounted Supervisor program can fail without affecting Runner health by design.
+
+### Cron job does not run
+
+Check:
+
+```bash
+docker exec runner ls -la /etc/cron.d
+docker exec runner supervisorctl -c /etc/supervisor/supervisord.conf status cron
+```
 
 Common causes:
 
-* The file in `/etc/cron.d` has wrong permissions/format. Keep it simple:
+- CRLF line endings;
+- missing final newline;
+- malformed schedule;
+- missing system-cron user field such as `root`;
+- a command that writes to an unwritable path.
 
-    * one job per line
-    * includes the user field (e.g. `root`)
-* Ensure your cron job writes somewhere writable (example uses `/global/log/...`).
+### Logrotate does not rotate
 
-Quick validation:
-
-```bash
-docker exec -it runner ls -la /etc/cron.d
-docker logs -f runner | grep -i cron
-```
-
-### Logrotate not rotating?
-
-Things to check:
-
-* Confirm the worker is running:
-
-  ```bash
-  docker exec -it runner supervisorctl -c /etc/supervisor/supervisord.conf status
-  ```
-
-* Confirm your logs match the patterns:
-
-    * `/global/log/**/*.log`
-    * `/global/movelog/**/*.log`
-    * `/var/log/supervisor/*.log`
-
-* Confirm state file exists (rotation is stateful):
-
-  ```bash
-  docker exec -it runner ls -la /var/lib/logrotate/status
-  ```
-
-* Force a single manual run (for testing only):
-
-  ```bash
-  docker exec -it runner /usr/sbin/logrotate -v -s /var/lib/logrotate/status /etc/logrotate.d/daily
-  ```
-
-### Permissions & Windows line endings (CRLF)
-
-These two issues cause 80% of “cron/logrotate not working” reports:
-
-1. **CRLF in mounted files** (especially from Windows)
-
-* Symptoms: “bad minute”, “^M”, jobs ignored, scripts not executed.
-* Fix on host:
-
-  ```bash
-  sed -i 's/\r$//' ./cron-jobs/* ./supervisor/*.conf 2>/dev/null || true
-  ```
-
-2. **Wrong permissions / ownership**
-
-* `/etc/cron.d/*` should be readable by root.
-* Your log dirs should be writable by the processes writing logs.
-
-Quick checks:
+Check worker status and logs:
 
 ```bash
-docker exec -it runner sh -lc 'ls -la /etc/cron.d /etc/supervisor/conf.d /global/log /global/movelog /global/oldlogs /var/log/supervisor'
+docker exec runner supervisorctl -c /etc/supervisor/supervisord.conf status logrotate
+docker logs runner
 ```
 
-### “I mounted logs but nothing happens”
-
-Most common mistake: mounting the wrong path.
-
-Correct examples:
+Validate the primary config manually:
 
 ```bash
--v $(pwd)/logs:/global/log/my-app
--v $(pwd)/movelogs:/global/movelog/my-app
--v $(pwd)/oldlogs:/global/oldlogs
+docker exec runner logrotate -d -s /tmp/logrotate-debug /etc/logrotate.d/daily
 ```
 
-### My logrotate postrotate messages aren’t in `docker logs`
-
-Your configs write to `/proc/1/fd/1`. If you run the container without Supervisor as PID 1 (custom entrypoint), this won’t work.
-
-Make sure you’re using the default CMD:
+Force a test rotation only when you intentionally want to bypass normal state/timing:
 
 ```bash
-supervisord -c /etc/supervisor/supervisord.conf
+docker exec runner logrotate -f -s /var/lib/logrotate/status /etc/logrotate.d/daily
 ```
 
----
+### Windows line endings
 
-## 🔐 Notes
+Repository files are locked to LF through `.gitattributes`. Host-mounted scheduler/config files should also be LF-only.
 
-* Mounting `/var/run/docker.sock` allows `pexe` and `dexe` to exec into other containers.
-* `/etc/supervisor/conf.d` and `/etc/cron.d` should typically be mounted read-only (`:ro`).
+A simple host-side conversion is:
 
----
+```bash
+sed -i 's/\r$//' ./cron-jobs/* ./supervisor/*.conf 2>/dev/null || true
+```
 
-## 📑 License
+## License
 
 MIT © [infocyph](https://github.com/infocyph)
-
----
-
-## 🌐 Source & Issues
-
-* GitHub: [https://github.com/infocyph/docker-runner](https://github.com/infocyph/docker-runner)
-* Issues: [https://github.com/infocyph/docker-runner/issues](https://github.com/infocyph/docker-runner/issues)
-

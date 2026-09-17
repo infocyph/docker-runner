@@ -1,0 +1,161 @@
+name: Check
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master", "develop", "development" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: Static and contract checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Static checks
+        run: bash tests/static.sh
+
+      - name: Dependency contracts
+        run: bash tests/dependency-contract.sh
+
+      - name: Runtime contracts
+        run: bash tests/runtime-contract.sh
+
+      - name: Release contracts
+        run: bash tests/release-contract.sh
+
+      - name: Compose examples
+        run: bash tests/compose-contract.sh
+
+      - name: Helper smoke tests
+        run: bash tests/helpers-smoke.sh
+
+      - name: Install actionlint
+        env:
+          GOBIN: ${{ runner.temp }}/bin
+        run: |
+          mkdir -p "$GOBIN"
+          go install github.com/rhysd/actionlint/cmd/actionlint@latest
+
+      - name: Lint workflows
+        run: "${{ runner.temp }}/bin/actionlint"
+
+  runtime:
+    name: Build and release gate
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Runner
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build amd64 image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          pull: true
+          push: false
+          tags: infocyph/runner:ci
+          cache-from: type=gha,scope=check-amd64
+          cache-to: type=gha,scope=check-amd64,mode=max
+
+      - name: Verify expected image commands
+        run: |
+          docker run --rm --entrypoint sh infocyph/runner:ci -lc '
+            command -v supervisord >/dev/null &&
+            command -v crond >/dev/null &&
+            command -v logrotate >/dev/null &&
+            command -v dexe >/dev/null &&
+            command -v pexe >/dev/null &&
+            command -v show-banner >/dev/null &&
+            command -v chromacat >/dev/null &&
+            command -v runner-healthcheck >/dev/null &&
+            chromacat --version
+          '
+
+      - name: Checkout LocalDevStack main
+        uses: actions/checkout@v7
+        with:
+          repository: infocyph/LocalDevStack
+          ref: main
+          path: .localdevstack
+          persist-credentials: false
+
+      - name: Final Runner release gate
+        run: bash tests/release-gate.sh infocyph/runner:ci .localdevstack/docker/compose/companion.yaml
+
+  arm64:
+    name: arm64 build and startup smoke
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build arm64 image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/arm64
+          load: true
+          pull: true
+          push: false
+          tags: infocyph/runner:ci-arm64
+          cache-from: type=gha,scope=check-arm64
+          cache-to: type=gha,scope=check-arm64,mode=max
+
+      - name: arm64 command smoke
+        run: |
+          docker run --rm --platform linux/arm64 --entrypoint sh infocyph/runner:ci-arm64 -lc '
+            test "$(uname -m)" = "aarch64" &&
+            chromacat --version &&
+            bash -n /usr/local/bin/show-banner
+          '
+
+      - name: arm64 startup smoke
+        run: |
+          name="runner-arm64-${RANDOM}"
+          trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+          docker run -d \
+            --platform linux/arm64 \
+            --name "$name" \
+            infocyph/runner:ci-arm64 >/dev/null
+          for _ in $(seq 1 20); do
+            if docker exec "$name" runner-healthcheck >/dev/null 2>&1; then
+              docker exec "$name" supervisorctl -c /etc/supervisor/supervisord.conf status cron logrotate
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$name"
+          exit 1

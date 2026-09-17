@@ -1,0 +1,250 @@
+=====Dockerfile=====
+FROM alpine:latest
+LABEL org.opencontainers.image.source="https://github.com/infocyph/docker-runner"
+LABEL org.opencontainers.image.description="RUNNER (SUPERVISOR)"
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.authors="infocyph,abmmhasan"
+
+ENV PATH="/usr/local/bin:/usr/bin:/bin:/usr/games:$PATH" \
+    LANG="en_US.UTF-8" \
+    LC_ALL="en_US.UTF-8"
+
+RUN apk add --no-cache \
+      bash \
+      curl \
+      ca-certificates \
+      supervisor \
+      docker-cli \
+      logrotate \
+      cronie \
+      tzdata \
+      figlet \
+      ncurses \
+      musl-locales \
+      gawk \
+  && update-ca-certificates \
+  && mkdir -p \
+      /var/log/supervisor \
+      /etc/supervisor/conf.d \
+      /etc/cron.d \
+      /global/log \
+      /global/movelog \
+      /global/oldlogs \
+      /var/lib/logrotate
+
+COPY scripts/supervisord.conf /etc/supervisor/supervisord.conf
+COPY scripts/logrotate-worker.sh /usr/local/bin/logrotate-worker.sh
+COPY scripts/pexe.sh /usr/local/bin/pexe
+COPY scripts/dexe.sh /usr/local/bin/dexe
+COPY loggables/ /etc/logrotate.d/
+
+# Required remote downloads (kept). Strongly recommended: pin to commit SHA or verify checksums.
+ADD https://raw.githubusercontent.com/infocyph/Scriptomatic/master/bash/banner.sh /usr/local/bin/show-banner
+ADD https://raw.githubusercontent.com/infocyph/Toolset/main/ChromaCat/chromacat /usr/local/bin/chromacat
+
+RUN chmod +x \
+      /usr/local/bin/logrotate-worker.sh \
+      /usr/local/bin/pexe \
+      /usr/local/bin/dexe \
+      /usr/local/bin/show-banner \
+      /usr/local/bin/chromacat \
+  && chmod 644 /etc/supervisor/supervisord.conf \
+  && chmod 775 /var/log/supervisor /global/oldlogs /var/lib/logrotate \
+  && chmod 777 /global/log /global/movelog \
+  && mkdir -p /etc/profile.d \
+  && { \
+      echo '#!/bin/sh'; \
+      echo 'case "$-" in *i*) ;; *) exit 0 ;; esac'; \
+      echo '[ -z "${BANNER_SHOWN-}" ] || exit 0'; \
+      echo 'export BANNER_SHOWN=1'; \
+      echo 'command -v show-banner >/dev/null 2>&1 || exit 0'; \
+      echo 'show-banner "RUNNER (SUPERVISOR)"'; \
+    } > /etc/profile.d/banner-hook.sh \
+  && chmod +x /etc/profile.d/banner-hook.sh
+
+# Healthcheck: supervisor must be up and responsive
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD supervisorctl -c /etc/supervisor/supervisord.conf status >/dev/null 2>&1 || exit 1
+
+STOPSIGNAL SIGTERM
+
+CMD ["supervisord", "-c", "/etc/supervisor/supervisord.conf"]
+
+rel_path=Dockerfile
+=====loggables/daily=====
+/global/log/*.log /global/log/*/*.log /global/log/*/*/*.log {
+    su root root
+    daily
+    rotate 7
+    maxage 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    dateext
+    dateformat -%Y%m%d
+    sharedscripts
+    postrotate
+        TS="$(date -u +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date)"
+        MSG="[logrotate] rotated /global/log (daily) at ${TS}"
+        [ -w /proc/1/fd/1 ] && printf '%s\n' "$MSG" > /proc/1/fd/1 || true
+    endscript
+}
+
+rel_path=loggables/daily
+=====loggables/dailyold=====
+/global/movelog/*.log /global/movelog/*/*.log /global/movelog/*/*/*.log {
+    su root root
+    daily
+    rotate 7
+    maxage 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    dateext
+    dateformat -%Y%m%d
+    sharedscripts
+    olddir /global/oldlogs
+    postrotate
+        TS="$(date -u +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date)"
+        MSG="[logrotate] rotated /global/movelog -> /global/oldlogs (daily) at ${TS}"
+        [ -w /proc/1/fd/1 ] && printf '%s\n' "$MSG" > /proc/1/fd/1 || true
+    endscript
+}
+
+rel_path=loggables/dailyold
+=====loggables/supervisord=====
+/var/log/supervisor/*.log {
+    su root root
+    daily
+    rotate 7
+    maxage 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    dateext
+    dateformat -%Y%m%d
+    sharedscripts
+    postrotate
+        TS="$(date -u +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date)"
+        MSG="[logrotate] rotated /var/log/supervisor (daily) at ${TS}"
+        [ -w /proc/1/fd/1 ] && printf '%s\n' "$MSG" > /proc/1/fd/1 || true
+    endscript
+}
+
+rel_path=loggables/supervisord
+=====scripts/dexe.sh=====
+#!/bin/sh
+set -eu
+
+cn="${1:-}"
+[ -n "$cn" ] || { echo "Usage: dexe <container> <cmd...>" >&2; exit 2; }
+shift
+
+if [ "$#" -eq 0 ]; then
+  echo "Usage: dexe <container> <cmd...>" >&2
+  exit 2
+fi
+
+if [ -t 0 ] && [ -t 1 ]; then
+  exec docker exec -it "$cn" "$@"
+fi
+
+exec docker exec "$cn" "$@"
+
+rel_path=scripts/dexe.sh
+=====scripts/logrotate-worker.sh=====
+#!/usr/bin/env bash
+set -euo pipefail
+
+SLEEP_INTERVAL="${LOGROTATE_INTERVAL:-3600}"
+STATE_FILE="${LOGROTATE_STATE_FILE:-/var/lib/logrotate/status}"
+
+mkdir -p "$(dirname "$STATE_FILE")"
+
+while true; do
+    echo "[logrotate] Running logrotate (state: $STATE_FILE)"
+
+    # Preferred: run the main config if it exists (it includes /etc/logrotate.d/* typically)
+    if [[ -f /etc/logrotate.conf ]]; then
+        echo "[logrotate] Using /etc/logrotate.conf"
+        /usr/sbin/logrotate -s "$STATE_FILE" /etc/logrotate.conf
+    else
+        echo "[logrotate] Using /etc/logrotate.d/* fallback"
+        for config in /etc/logrotate.d/*; do
+            [[ -f "$config" ]] || continue
+            [[ "$(basename "$config")" == .* ]] && continue
+            /usr/sbin/logrotate -s "$STATE_FILE" "$config"
+        done
+    fi
+
+    echo "[logrotate] Sleeping for ${SLEEP_INTERVAL}s"
+    sleep "$SLEEP_INTERVAL"
+done
+
+rel_path=scripts/logrotate-worker.sh
+=====scripts/pexe.sh=====
+#!/bin/sh
+set -eu
+
+cn="${1:-}"
+[ -n "$cn" ] || { echo "Usage: pexe <container> <php-args...>" >&2; exit 2; }
+shift
+
+if [ "$#" -eq 0 ]; then
+  echo "Usage: pexe <container> <php-args...>" >&2
+  exit 2
+fi
+
+if [ -t 0 ] && [ -t 1 ]; then
+  exec docker exec -it "$cn" php "$@"
+fi
+
+exec docker exec "$cn" php "$@"
+
+rel_path=scripts/pexe.sh
+=====scripts/supervisord.conf=====
+[supervisord]
+nodaemon=true
+user=root
+logfile=/var/log/supervisor/supervisord.log
+loglevel=info
+pidfile=/run/supervisord.pid
+childlogdir=/var/log/supervisor
+
+[rpcinterface:supervisor]
+supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
+
+[unix_http_server]
+file=/run/supervisor.sock
+chmod=0700
+
+[supervisorctl]
+serverurl=unix:///run/supervisor.sock
+
+[program:logrotate]
+command=/usr/local/bin/logrotate-worker.sh
+autostart=true
+autorestart=true
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+
+[program:cron]
+command=/usr/sbin/crond -f
+autostart=true
+autorestart=true
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+
+[include]
+files = /etc/supervisor/conf.d/*.conf
+
